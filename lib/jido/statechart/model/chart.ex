@@ -391,21 +391,61 @@ defmodule Jido.Statechart.Model.Chart do
   end
 
   defp valid_initial(state, index, by_id) do
-    state.initial
-    |> Enum.with_index()
-    |> Enum.reduce_while(:ok, fn {initial_id, initial_index}, :ok ->
-      case Map.get(by_id, initial_id) do
-        %State{parent: parent} when parent == state.id ->
-          {:cont, :ok}
+    valid_descendants? =
+      Enum.all?(state.initial, fn initial_id ->
+        Map.has_key?(by_id, initial_id) and state.id in state_ancestors(initial_id, by_id)
+      end)
 
-        _ ->
-          {:halt,
-           {:error,
-            Diagnostic.new(:invalid_initial, "initial target must be a direct child",
-              path: [:states, index, :initial, initial_index]
-            )}}
-      end
+    if valid_descendants? and legal_state_spec?(state.initial, by_id) do
+      :ok
+    else
+      {:error,
+       Diagnostic.new(
+         :invalid_initial,
+         "initial targets must be a legal descendant state specification",
+         path: [:states, index, :initial]
+       )}
+    end
+  end
+
+  defp legal_state_spec?([], _by_id), do: true
+  defp legal_state_spec?([_target], _by_id), do: true
+
+  defp legal_state_spec?(targets, by_id) do
+    no_ancestor_pair? =
+      Enum.all?(targets, fn target ->
+        Enum.all?(targets -- [target], fn other -> target not in state_ancestors(other, by_id) end)
+      end)
+
+    lcca = lowest_common_state_ancestor(targets, by_id)
+
+    no_ancestor_pair? and match?(%State{kind: :parallel}, Map.get(by_id, lcca)) and
+      targets
+      |> Enum.map(&state_region_below(&1, lcca, by_id))
+      |> then(&(nil not in &1 and length(&1) == length(Enum.uniq(&1))))
+  end
+
+  defp lowest_common_state_ancestor([first | rest], by_id) do
+    Enum.find(state_ancestors(first, by_id), fn candidate ->
+      Enum.all?(rest, &(candidate in state_ancestors(&1, by_id)))
     end)
+  end
+
+  defp state_ancestors(id, by_id) do
+    case Map.get(by_id, id) do
+      %State{parent: nil} -> []
+      %State{parent: parent} -> [parent | state_ancestors(parent, by_id)]
+      nil -> []
+    end
+  end
+
+  defp state_region_below(target, ancestor, by_id) do
+    case Map.get(by_id, target) do
+      %State{parent: ^ancestor} -> target
+      %State{parent: nil} -> nil
+      %State{parent: parent} -> state_region_below(parent, ancestor, by_id)
+      nil -> nil
+    end
   end
 
   defp acyclic_parent(state, index, by_id) do

@@ -49,6 +49,25 @@ defmodule Jido.Statechart.ModelTest do
     refute chart.fingerprint == changed_chart.fingerprint
   end
 
+  test "accepts a legal descendant initial specification across parallel regions" do
+    chart = chart_fixture()
+    [root, regions, left, right] = chart.states
+
+    assert {:ok, legal} =
+             Chart.new(%{
+               chart
+               | states: [%{root | initial: ["left", "right"]}, regions, left, right]
+             })
+
+    assert hd(legal.states).initial == ["left", "right"]
+
+    assert {:error, %Diagnostic{code: :invalid_initial}} =
+             Chart.new(%{
+               chart
+               | states: [%{root | initial: ["regions", "left"]}, regions, left, right]
+             })
+  end
+
   test "generated identifiers are deterministic and contain no document atoms" do
     assert Chart.generated_id("state", [0, 2], 4) ==
              Chart.generated_id("state", [0, 2], 4)

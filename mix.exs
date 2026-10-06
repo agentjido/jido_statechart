@@ -1,7 +1,7 @@
 defmodule Jido.Statechart.MixProject do
   use Mix.Project
 
-  @version "0.2.0"
+  @version "0.3.0"
   @source_url "https://github.com/agentjido/jido_statechart"
 
   def project do
@@ -66,7 +66,7 @@ defmodule Jido.Statechart.MixProject do
       {:jido_action, path: "../jido_action", override: true},
       {:jido_signal, path: "../jido_signal", override: true},
       {:zoi, path: "../zoi", override: true},
-      {:saxy, "~> 1.6", optional: true},
+      {:saxy, "~> 1.6"},
       {:jason, "~> 1.4"},
       {:stream_data, "~> 1.4", only: :test, runtime: false},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
