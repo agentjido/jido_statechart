@@ -13,7 +13,8 @@ release. It is not yet a Hex release.
 - Explicit initial states and one active path from root to leaf.
 - Guarded transitions, entry actions, exit actions, and transition actions.
 - External, internal descendant, and targetless transitions.
-- Exact event identities, eventless transitions, and FIFO internal events.
+- Exact event identities, SCXML event descriptors, eventless transitions,
+  and FIFO internal events.
 - Compound completion events named `done.state.<state-id>`.
 - Deterministic transition priority, traces, and execution counts.
 - Fixed upper limits, typed errors, and atomic failure of a macrostep.
@@ -21,12 +22,13 @@ release. It is not yet a Hex release.
 - Explicit effect requests and trusted builders for Jido Directives.
 - One generic Step Action, normal Jido Agent definitions, and compatible
   checkpoints with definition fingerprints.
-- An Elixir DSL and a data compiler that produce the same normalized model.
+- An Elixir DSL, data compiler, and restricted SCXML/XML compiler that produce
+  the same normalized model.
 
-Parallel states, history states, SCXML input, expression languages, timers,
+Parallel states, history states, expression languages, timers,
 invoked services, and W3C conformance are outside this release. Unknown fields
 and unsupported state kinds cause a compile error. See
-[the SCXML boundary](guides/scxml.md).
+[the SCXML profile](guides/scxml.md).
 
 ## Local installation
 
@@ -108,6 +110,31 @@ To run the same Agent in OTP, start a normal Jido instance and use
 `Jido.start_agent/3` and `Jido.AgentServer.call/3`. This package does not
 implement another AgentServer.
 
+## SCXML / XML input
+
+Add `{:saxy, "~> 1.6"}` to the consumer for XML support. Compile UTF-8 XML
+bytes once:
+
+```elixir
+chart = Jido.Statechart.SCXML.compile!(File.read!("charts/door.scxml"))
+```
+
+An Agent can use the same format at module compile time:
+
+```elixir
+defmodule MyApp.XMLDoor do
+  use Jido.Statechart.Agent, name: "xml_door"
+
+  @external_resource Path.join(__DIR__, "door.scxml")
+  statechart_xml File.read!(@external_resource)
+end
+```
+
+The adapter supports nested states, transitions, trusted guard and action IDs,
+entry and exit handlers, raised events, and effect requests. It rejects DTDs,
+external entities, scripts, and unsupported elements. See the
+[supported SCXML profile](guides/scxml.md) and [example](examples/scxml.exs).
+
 ## Trusted behavior
 
 A guard has arity 2: `(data, event) -> boolean`. A reducer has arity 3:
@@ -173,7 +200,7 @@ mechanism.
 
 - [Architecture and package boundaries](guides/architecture.md)
 - [Execution rules, data model, and limits](guides/semantics.md)
-- [SCXML boundary and follow-up scope](guides/scxml.md)
+- [SCXML input and supported profile](guides/scxml.md)
 - [Contribution](CONTRIBUTING.md)
 - [Verification results](guides/verification.md)
 

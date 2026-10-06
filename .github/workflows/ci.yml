@@ -53,3 +53,4 @@ jobs:
           mix docs --warnings-as-errors
           mix run examples/door.exs
           mix run examples/approval.exs
+          mix run examples/scxml.exs

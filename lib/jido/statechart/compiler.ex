@@ -1,6 +1,6 @@
 defmodule Jido.Statechart.Compiler do
   @moduledoc "Compiles bounded data into the same normalized model used by the Agent DSL."
-  alias Jido.Statechart.{Data, Definition, Error, Limits, State, Transition}
+  alias Jido.Statechart.{Data, Definition, Error, EventDescriptor, Limits, State, Transition}
 
   @doc "Compiles a plain map. Known input keys can be strings or fixed atoms."
   @spec compile(term()) :: {:ok, Definition.t()} | {:error, Error.t()}
@@ -43,7 +43,8 @@ defmodule Jido.Statechart.Compiler do
               state.transitions
               |> Enum.sort_by(& &1.order)
               |> Enum.map(fn t ->
-                Map.drop(Map.from_struct(t), [:source, :order])
+                data = Map.drop(Map.from_struct(t), [:source, :order, :event_descriptors])
+                if t.event_mode == :exact, do: Map.delete(data, :event_mode), else: data
               end)
           }
         end)
@@ -142,7 +143,7 @@ defmodule Jido.Statechart.Compiler do
   end
 
   defp transition!(raw, source, order, limits, path) do
-    map!(raw, [:event, :target, :guard, :actions, :priority, :kind], path)
+    map!(raw, [:event, :target, :guard, :actions, :priority, :kind, :event_mode], path)
     priority = get(raw, :priority, 0)
 
     ensure!(
@@ -152,11 +153,16 @@ defmodule Jido.Statechart.Compiler do
       path ++ [:priority]
     )
 
+    event = optional_id!(get(raw, :event), limits, path ++ [:event])
+    event_mode = enum!(get(raw, :event_mode, :exact), [:exact, :scxml], path ++ [:event_mode])
+
     %Transition{
       source: source,
       order: order,
       priority: priority,
-      event: optional_id!(get(raw, :event), limits, path ++ [:event]),
+      event: event,
+      event_mode: event_mode,
+      event_descriptors: if(event_mode == :scxml, do: EventDescriptor.compile(event), else: []),
       target: optional_id!(get(raw, :target), limits, path ++ [:target]),
       guard: optional_id!(get(raw, :guard), limits, path ++ [:guard]),
       actions: actions!(get(raw, :actions, []), limits, path ++ [:actions]),

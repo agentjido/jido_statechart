@@ -71,6 +71,21 @@ defmodule JidoStatechartTest.AgentTest do
     assert Server.snapshot(server).state_version == 2
   end
 
+  test "SCXML Agents use normal Signals, one commit, effects and trusted checkpoint restore" do
+    module = JidoStatechartTest.XMLDoor
+    {:ok, server} = Jido.start_agent(JidoStatechartTest.Runtime, module, id: "xml-live")
+    assert {:ok, opened} = Server.call(server, signal("door.open.request"))
+    assert opened.state.chart.active == ["opened"]
+    assert Server.snapshot(server).state_version == 1
+    assert_receive {:signal, %Jido.Signal{type: "chart.changed"}}, 1000
+    assert {:ok, checkpoint} = Jido.Agent.checkpoint(opened)
+    assert {:ok, restored} = Jido.Agent.restore(module, checkpoint)
+    assert restored == opened
+    assert {:ok, closed, []} = module.cmd(restored, signal("door.close"))
+    assert closed.state.chart.active == ["closed"]
+    refute_received {:signal, %Jido.Signal{type: "chart.changed"}}
+  end
+
   test "limits, unhandled events, bad effects, and invalid domain state never commit or dispatch" do
     {:ok, server} = Jido.start_agent(JidoStatechartTest.Runtime, Door, id: "failures")
     initial = Server.agent(server)

@@ -37,8 +37,10 @@ defmodule Jido.Statechart.Transition do
           actions: list(),
           priority: integer(),
           order: non_neg_integer(),
-          kind: :external | :internal
+          kind: :external | :internal,
+          event_mode: :exact | :scxml,
+          event_descriptors: [String.t() | :any]
         }
   @enforce_keys [:source, :event, :target, :guard, :actions, :priority, :order, :kind]
-  defstruct @enforce_keys
+  defstruct @enforce_keys ++ [event_mode: :exact, event_descriptors: []]
 end

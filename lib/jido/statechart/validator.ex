@@ -94,7 +94,8 @@ defmodule Jido.Statechart.Validator do
                  bounded_list?(state.transitions, limits.transitions) and
                  Enum.all?(state.transitions, fn
                    %Transition{} = transition ->
-                     bounded_list?(transition.actions, limits.actions_per_list)
+                     bounded_list?(transition.actions, limits.actions_per_list) and
+                       bounded_list?(transition.event_descriptors, 32)
 
                    _ ->
                      false

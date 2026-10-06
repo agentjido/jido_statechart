@@ -86,6 +86,55 @@ defmodule JidoStatechartTest.DSLTest do
     end
   end
 
+  test "XML Agent declaration accepts compile options and rejects mixed declarations" do
+    [{module, _}] =
+      Code.compile_quoted(
+        quote do
+          defmodule JidoStatechartTest.XMLCompiled do
+            use Jido.Statechart.Agent, name: "xml_compiled"
+
+            statechart_xml(
+              "<scxml xmlns=\"http://www.w3.org/2005/07/scxml\" version=\"1.0\"><state id=\"a\"/></scxml>",
+              id: "custom",
+              version: "2"
+            )
+          end
+        end
+      )
+
+    assert module.chart_definition().id == "custom"
+    assert module.chart_definition().version == "2"
+
+    for xml_first? <- [true, false] do
+      xml =
+        quote do
+          statechart_xml(
+            "<scxml xmlns=\"http://www.w3.org/2005/07/scxml\" version=\"1.0\"><state id=\"a\"/></scxml>"
+          )
+        end
+
+      data =
+        quote do
+          statechart id: "data", initial: "a" do
+            state("a")
+          end
+        end
+
+      declarations = if xml_first?, do: [xml, data], else: [data, xml]
+
+      assert_raise ArgumentError, fn ->
+        Code.compile_quoted(
+          quote do
+            defmodule JidoStatechartTest.MixedChart do
+              use Jido.Statechart.Agent, name: "mixed_chart"
+              unquote_splicing(declarations)
+            end
+          end
+        )
+      end
+    end
+  end
+
   test "core facade returns typed errors for invalid initialization and checkpoints" do
     assert {:error, %Error{}} = Jido.Statechart.init(%{})
     defn = Compiler.compile!(JidoStatechartTest.Fixtures.flat())

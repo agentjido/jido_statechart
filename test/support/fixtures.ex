@@ -137,3 +137,19 @@ defmodule JidoStatechartTest.NestedDSL do
     state "end", type: :final
   end
 end
+
+defmodule JidoStatechartTest.XMLDoor do
+  use Jido.Statechart.Agent, name: "statechart_xml_door"
+
+  statechart_xml("""
+  <scxml xmlns="http://www.w3.org/2005/07/scxml"
+         xmlns:j="urn:jido:statechart:1" version="1.0" name="xml_door">
+    <state id="closed">
+      <transition event="door.open" target="opened"><j:effect id="notify"/></transition>
+    </state>
+    <state id="opened"><transition event="door.close" target="closed"/></state>
+  </scxml>
+  """)
+
+  def effects, do: JidoStatechartTest.Door.effects()
+end

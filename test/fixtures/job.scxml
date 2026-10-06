@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       xmlns:j="urn:jido:statechart:1" version="1.0" name="job" datamodel="jido">
+  <!-- The first child is the default initial state. -->
+  <state id="work">
+    <onentry><j:action id="log"/></onentry>
+    <onexit><j:action id="log"/></onexit>
+    <transition event="done.state.work" target="done"/>
+    <state id="idle">
+      <onentry><j:action id="log"/></onentry>
+      <onexit><j:action id="log"/></onexit>
+      <transition event="go" target="busy">
+        <j:action id="log"/>
+        <raise event="raised"/>
+      </transition>
+    </state>
+    <state id="busy">
+      <onentry><j:action id="log"/></onentry>
+      <onexit><j:action id="log"/></onexit>
+      <transition target="ready"><j:action id="log"/></transition>
+    </state>
+    <state id="ready">
+      <onentry><j:action id="log"/></onentry>
+      <onexit><j:action id="log"/></onexit>
+      <transition event="raised" target="complete">
+        <j:action id="log"/><j:effect id="notify"/>
+      </transition>
+    </state>
+    <final id="complete">
+      <onentry><j:action id="log"/></onentry>
+      <onexit><j:action id="log"/></onexit>
+    </final>
+  </state>
+  <final id="done"><onentry><j:action id="log"/></onentry></final>
+</scxml>

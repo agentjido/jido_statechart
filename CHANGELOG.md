@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.2.0 — 2026-10-06
+
+- Add restricted SCXML 1.0 XML input through an optional Saxy parser.
+- Add bounded namespace validation, parser security checks, and typed rejection
+  of unsupported XML elements, attributes, and executable content.
+- Add SCXML event descriptors with bounded prefix and wildcard matching.
+- Preserve existing exact-mode fingerprints and checkpoint compatibility.
+- Add the `statechart_xml` Agent declaration, JSON action payloads, fixed XML
+  fixtures, parser properties, live integration tests, and an XML example.
+
 ## 0.1.0 — 2026-10-06
 
 - Add the normalized definition compiler and strict validator.

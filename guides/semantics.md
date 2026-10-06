@@ -12,7 +12,7 @@ fields. The default type is `atomic`. Supported types are `atomic`, `compound`,
 and `final`. Atomic and final states have no children. Final states have no
 transitions. Final entry and exit actions are permitted.
 
-A transition has `event`, `target`, `guard`, `actions`, `priority`, and `kind`
+A transition has `event`, `target`, `guard`, `actions`, `priority`, `kind`, and `event_mode`
 fields. A missing event means an eventless transition. A missing target means
 an action-only transition. The default priority is 0. It must be an integer
 from -1,000,000 through 1,000,000. The default kind is `external`.
@@ -38,8 +38,9 @@ trusted IDs. There is no string expression evaluator.
 5. Search the parent when no transition at that source is enabled.
 
 A deeper enabled source wins over an ancestor, even when the ancestor has a
-higher priority. Events match complete strings. There are no wildcards,
-prefix matches, or space-separated event lists.
+higher priority. The default `event_mode` is `exact`: events match complete
+strings. The `scxml` mode supports dot prefixes, descriptor alternatives, and
+wildcards. The XML compiler uses that mode. See the SCXML guide.
 
 An unhandled external event fails the macrostep. An unhandled internal event
 is removed from the queue and recorded in the trace.
@@ -119,7 +120,8 @@ names that can be introduced by external data. Fixed application atoms are
 accepted but can require trusted modules to be loaded on another BEAM node.
 
 Work counts include state searches, transition inspections, guard calls,
-transition execution, entry, exit, actions, requests, and internal queue
+SCXML descriptor checks, transition execution, entry, exit, actions, requests,
+and internal queue
 consumption. Traces, effect lists, and queues are bounded by those counts.
 Definition validation has separate structural and data bounds.
 

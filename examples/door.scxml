@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0" name="door" initial="closed">
+  <state id="closed">
+    <transition event="door.open" target="opened"/>
+  </state>
+  <state id="opened">
+    <transition event="door.close" target="closed"/>
+  </state>
+</scxml>

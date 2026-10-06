@@ -146,7 +146,9 @@ defmodule Jido.Statechart.Interpreter do
         Enum.reduce_while(w.definition.states[id].transitions, {nil, w}, fn t, {nil, w} ->
           w = tick(w)
 
-          if t.event == type do
+          {matches, w} = event_matches(w, t, type)
+
+          if matches do
             {enabled, w} = guard(w, t.guard, event)
             if enabled, do: {:halt, {t, w}}, else: {:cont, {nil, w}}
           else
@@ -155,6 +157,22 @@ defmodule Jido.Statechart.Interpreter do
         end)
 
       if transition, do: {:halt, {transition, w}}, else: {:cont, {nil, w}}
+    end)
+  end
+
+  defp event_matches(w, %{event_mode: :exact, event: expected}, type),
+    do: {expected == type, w}
+
+  defp event_matches(w, %{event: expected}, nil), do: {expected == nil, w}
+  defp event_matches(w, %{event: nil}, _type), do: {false, w}
+
+  defp event_matches(w, transition, type) do
+    Enum.reduce_while(transition.event_descriptors, {false, w}, fn descriptor, {false, w} ->
+      w = tick(w)
+
+      if Jido.Statechart.EventDescriptor.matches?(descriptor, type),
+        do: {:halt, {true, w}},
+        else: {:cont, {false, w}}
     end)
   end
 

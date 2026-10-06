@@ -28,7 +28,7 @@ defmodule Jido.Statechart.Agent do
   defmacro __using__(opts) do
     quote do
       @behaviour Jido.Agent
-      import Jido.Statechart.Agent, only: [statechart: 2]
+      import Jido.Statechart.Agent, only: [statechart: 2, statechart_xml: 1, statechart_xml: 2]
       @statechart_agent_options unquote(opts)
       @before_compile Jido.Statechart.Agent
       def registry, do: %Jido.Statechart.Registry{}
@@ -51,11 +51,24 @@ defmodule Jido.Statechart.Agent do
     end
   end
 
+  @doc "Compiles SCXML bytes into this Agent at module compile time."
+  defmacro statechart_xml(xml, opts \\ []) do
+    quote do
+      if Module.has_attribute?(__MODULE__, :statechart_definition),
+        do: raise(ArgumentError, "Define exactly one statechart")
+
+      @statechart_definition Jido.Statechart.SCXML.compile!(unquote(xml), unquote(opts))
+    end
+  end
+
   @doc false
   defmacro __before_compile__(env) do
     opts = Module.get_attribute(env.module, :statechart_agent_options)
     definition = Module.get_attribute(env.module, :statechart_definition)
-    if definition == nil, do: raise(ArgumentError, "Define one statechart block")
+
+    if definition == nil,
+      do: raise(ArgumentError, "Define one statechart block or statechart_xml declaration")
+
     name = Keyword.fetch!(opts, :name)
     vsn = Keyword.get(opts, :vsn, 1)
     data_schema = Keyword.get(opts, :data_schema, Zoi.map() |> Zoi.default(%{}))

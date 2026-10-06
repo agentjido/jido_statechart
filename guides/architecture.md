@@ -16,6 +16,14 @@ service or a distributed protocol. Jidoka can author charts through the data
 compiler. DASP can deliver events through an application adapter. Neither
 product nor protocol changes are required by this package.
 
+## XML adapter
+
+`Jido.Statechart.SCXML` is an optional input edge. It uses a bounded SAX handler
+with Saxy, validates a restricted SCXML profile, and calls the data compiler.
+It does not load resources or evaluate expressions. XML Agent declarations
+compile at module compile time. The runtime and checkpoint path use only the
+normalized definition. The SCXML guide defines the exact supported subset.
+
 ## Core model
 
 The compiler produces a `Definition` with a map of `State` values, ordered
