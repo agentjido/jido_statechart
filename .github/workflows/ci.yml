@@ -1,0 +1,55 @@
+name: V3 integration
+
+on:
+  workflow_dispatch:
+    inputs:
+      jido_ref:
+        description: Published Jido commit with the current V3 Turn contract
+        required: true
+      action_ref:
+        description: Published Jido Action commit with the current V3 executable contract
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: jido_statechart
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: agentjido/jido
+          ref: ${{ inputs.jido_ref }}
+          path: jido
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: agentjido/jido_action
+          ref: ${{ inputs.action_ref }}
+          path: jido_action
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: agentjido/jido_signal
+          ref: afc4c5c58e10db1be611c2a846c1d43b5a9ec1dc
+          path: jido_signal
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: mikehostetler/zoi
+          ref: 2fff2a23e23e7ac0b26f62f49bbc1b12f7818ac9
+          path: zoi
+      - uses: erlef/setup-beam@0f75c29430f34bb5af4cce5e3b7f6a8860fca236
+        with:
+          otp-version: '29'
+          elixir-version: '1.20.4'
+      - name: Check package and integration
+        working-directory: jido_statechart
+        run: |
+          mix deps.get
+          mix quality
+          mix test --cover --warnings-as-errors
+          mix docs --warnings-as-errors
+          mix run examples/door.exs
+          mix run examples/approval.exs
