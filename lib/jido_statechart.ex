@@ -1,30 +1,55 @@
 defmodule Jido.Statechart do
   @moduledoc """
-  Deterministic, bounded statecharts for Jido V3.
+  Public contracts for the Jido SCXML 1.0 Profile.
 
-  Compile data once. Pass the compiled definition and a trusted behavior
-  registry to `init/3` and `step/4`. These functions start no process and perform
-  no external I/O. A successful result contains one stable candidate and an
-  ordered batch of post-commit effect requests.
-
-  Use `Jido.Statechart.Agent` to execute the same interpreter through ordinary
-  Jido Signals, Turns, state validation, checkpoints, and AgentServer.
+  Compiler and execution entry points are added by their owning implementation
+  units. This module currently exposes the stable profile and safe inspection
+  values that those entry points use.
   """
-  alias Jido.Statechart.{Compiler, Definition, Error, Event, Instance, Registry, Result}
-  @doc "Compiles bounded authoring data."
-  @spec compile(term()) :: {:ok, Definition.t()} | {:error, Error.t()}
-  defdelegate compile(data), to: Compiler
-  @doc "Compiles authoring data or raises its error."
-  @spec compile!(term()) :: Definition.t() | no_return()
-  defdelegate compile!(data), to: Compiler
-  @doc "Runs chart initialization through a pure macrostep."
-  @spec init(Definition.t(), map(), Registry.t()) :: {:ok, Result.t()} | {:error, Error.t()}
-  def init(definition, data \\ %{}, registry \\ %Registry{}),
-    do: Jido.Statechart.Interpreter.init(definition, data, registry)
 
-  @doc "Runs one external event to a stable result."
-  @spec step(Definition.t(), Instance.t(), Event.t(), Registry.t()) ::
-          {:ok, Result.t()} | {:error, Error.t()}
-  def step(definition, instance, event, registry \\ %Registry{}),
-    do: Jido.Statechart.Interpreter.step(definition, instance, event, registry)
+  alias Jido.Statechart.{Profile, Session}
+  alias Jido.Statechart.Model.Chart
+
+  @doc "Returns the machine-readable Jido SCXML capability manifest."
+  @spec capabilities() :: map()
+  def capabilities, do: Profile.manifest()
+
+  @doc "Returns safe identity and size data for a normalized chart."
+  @spec inspect_chart(Chart.t()) :: map()
+  def inspect_chart(%Chart{} = chart) do
+    %{
+      "id" => chart.id,
+      "name" => chart.name,
+      "fingerprint" => chart.fingerprint,
+      "profile_version" => chart.profile_version,
+      "datamodel" => chart.datamodel,
+      "state_count" => length(chart.states),
+      "transition_count" => length(chart.transitions)
+    }
+  end
+
+  @doc "Returns safe stable state without operation payloads or trace data."
+  @spec inspect_session(Session.t()) :: map()
+  def inspect_session(%Session{} = session) do
+    pending_ids =
+      session.operations
+      |> Map.values()
+      |> Enum.reject(&Session.Operation.terminal?/1)
+      |> Enum.map(& &1.id)
+      |> Enum.sort()
+
+    %{
+      "id" => session.id,
+      "incarnation" => session.incarnation,
+      "chart_fingerprint" => session.chart_fingerprint,
+      "profile_version" => session.profile_version,
+      "status" => Atom.to_string(session.status),
+      "revision" => session.revision,
+      "configuration" => session.configuration,
+      "history" => session.history,
+      "completed" => session.status in [:completed, :cleaning, :stopped],
+      "trace_entries" => length(session.trace),
+      "pending_intent_ids" => pending_ids
+    }
+  end
 end
