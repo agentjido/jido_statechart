@@ -533,8 +533,12 @@ defmodule Jido.Statechart.PluginTest do
       checkpoint_fixture(4)
       |> Map.put("profile_version", Profile.version())
       |> Map.put("chart_fingerprint", BoundChart.chart().fingerprint)
+      |> Map.put("limits", current["limits"])
+      |> Map.put("limits_version", current["limits_version"])
       |> put_in(["session", "profile_version"], Profile.version())
       |> put_in(["session", "chart_fingerprint"], BoundChart.chart().fingerprint)
+      |> put_in(["session", "limits_digest"], current["session"]["limits_digest"])
+      |> put_in(["session", "limits_version"], current["session"]["limits_version"])
 
     for legacy <- [version_one, version_two, version_three, version_four] do
       assert {:ok, migrated} = Plugin.migrate(legacy, @options)

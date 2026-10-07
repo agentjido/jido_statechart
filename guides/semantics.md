@@ -88,6 +88,7 @@ this contract. A restore or execution with different limits fails.
 | Limit | Default | Hard maximum |
 | --- | ---: | ---: |
 | XML bytes | 1,048,576 | 16,777,216 |
+| XML chunks | 10,000 | 1,000,000 |
 | XML depth | 64 | 256 |
 | XML attributes per element | 64 | 512 |
 | XML nodes | 10,000 | 100,000 |

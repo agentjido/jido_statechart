@@ -23,11 +23,12 @@
     "trace_entries": 10000,
     "xml_attributes": 64,
     "xml_bytes": 1048576,
+    "xml_chunks": 10000,
     "xml_depth": 64,
     "xml_nodes": 10000,
     "xml_text_bytes": 1048576
   },
-  "limits_version": "1",
+  "limits_version": "2",
   "profile_version": "jido-scxml-1.0/profile-2",
   "recent_signal_ids": ["signal-new"],
   "registry_manifest": {
@@ -52,8 +53,8 @@
     "invocation_depth": 0,
     "invocation_remaining_descendants": null,
     "invocation_descendants_used": 0,
-    "limits_digest": "4c46ace12ff041579f70587b23e4e768710a92c69c37e96ed3df59ccaa6d3a4d",
-    "limits_version": "1",
+    "limits_digest": "c178e8db0d8f924d9f187d9ab2766d331c1735e4f3bb1420d8e69980e2e301d5",
+    "limits_version": "2",
     "operation_counter": 3,
     "operation_high_water": {},
     "operation_tombstones": {

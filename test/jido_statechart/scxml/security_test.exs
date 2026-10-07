@@ -74,6 +74,38 @@ defmodule Jido.Statechart.SCXML.SecurityTest do
              SCXML.compile(text_xml, limits: limit(xml_text_bytes: 2))
   end
 
+  test "stops after the XML chunk limit and counts empty chunks" do
+    owner = self()
+    xml = @prefix <> @suffix
+
+    chunks =
+      Stream.concat(
+        ["", "", ""],
+        Stream.map([xml], fn chunk ->
+          send(owner, :enumerated_after_chunk_limit)
+          chunk
+        end)
+      )
+
+    assert {:error,
+            %Diagnostic{
+              code: :xml_chunk_limit,
+              message: "SCXML input exceeds the XML chunk limit",
+              profile_feature: "restricted_xml",
+              correction: %{"maximum_chunks" => 2}
+            }} = SCXML.compile_stream(chunks, limits: limit(xml_chunks: 2))
+
+    refute_received :enumerated_after_chunk_limit
+  end
+
+  test "accepts one-byte XML chunks through the configured boundary" do
+    xml = @prefix <> @suffix
+    chunks = Enum.map(:binary.bin_to_list(xml), &<<&1>>)
+
+    assert {:ok, _chart} =
+             SCXML.compile_stream(chunks, limits: limit(xml_chunks: byte_size(xml)))
+  end
+
   test "does not create atoms from document names" do
     unknown = "unknown_#{System.unique_integer([:positive])}"
     xml = @prefix <> "<#{unknown}/></scxml>"

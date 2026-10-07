@@ -6,11 +6,19 @@ defmodule Jido.Statechart.SCXML.LexicalGuard do
   @tail_bytes 32
   @predefined ~w(amp lt gt apos quot)
 
-  defstruct chunks: [], bytes: 0, limit: nil, scan_mode: :normal, scan_tail: ""
+  defstruct chunks: [],
+            bytes: 0,
+            chunk_count: 0,
+            chunk_limit: nil,
+            limit: nil,
+            scan_mode: :normal,
+            scan_tail: ""
 
   @type t :: %__MODULE__{
           chunks: [binary()],
           bytes: non_neg_integer(),
+          chunk_count: non_neg_integer(),
+          chunk_limit: pos_integer(),
           limit: pos_integer(),
           scan_mode: :normal | :comment | :cdata | :declaration,
           scan_tail: binary()
@@ -18,7 +26,7 @@ defmodule Jido.Statechart.SCXML.LexicalGuard do
 
   @spec collect(Enumerable.t(), Limits.t()) :: {:ok, binary()} | {:error, Diagnostic.t()}
   def collect(chunks, %Limits{} = limits) do
-    initial = %__MODULE__{limit: limits.xml_bytes}
+    initial = %__MODULE__{limit: limits.xml_bytes, chunk_limit: limits.xml_chunks}
 
     with {:ok, state} <- reduce_chunks(chunks, initial),
          {:ok, xml} <- finish(state) do
@@ -39,7 +47,21 @@ defmodule Jido.Statechart.SCXML.LexicalGuard do
   end
 
   @spec feed(t(), term()) :: {:ok, t()} | {:error, Diagnostic.t()}
-  def feed(%__MODULE__{} = state, chunk) when is_binary(chunk) do
+  def feed(%__MODULE__{} = state, chunk) do
+    chunk_count = state.chunk_count + 1
+
+    if chunk_count > state.chunk_limit do
+      {:error,
+       diagnostic(:xml_chunk_limit, "SCXML input exceeds the XML chunk limit",
+         profile_feature: "restricted_xml",
+         correction: %{"maximum_chunks" => state.chunk_limit}
+       )}
+    else
+      feed_chunk(%{state | chunk_count: chunk_count}, chunk)
+    end
+  end
+
+  defp feed_chunk(%__MODULE__{} = state, chunk) when is_binary(chunk) do
     bytes = state.bytes + byte_size(chunk)
 
     if bytes > state.limit do
@@ -69,7 +91,7 @@ defmodule Jido.Statechart.SCXML.LexicalGuard do
     end
   end
 
-  def feed(%__MODULE__{}, _chunk),
+  defp feed_chunk(%__MODULE__{}, _chunk),
     do: {:error, diagnostic(:invalid_xml_input, "SCXML input must contain binary chunks")}
 
   @spec finish(t()) :: {:ok, binary()} | {:error, Diagnostic.t()}

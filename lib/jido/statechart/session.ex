@@ -12,7 +12,7 @@ defmodule Jido.Statechart.Session do
   @schema_version 3
   @runtime_protocol_version 3
   @data_model_version "1"
-  @limits_version "1"
+  @limits_version "2"
   @generated_id_prefix "__jido_scxml_generated_"
   @statuses [:new, :active, :completed, :cleaning, :stopped]
   @version_fields [

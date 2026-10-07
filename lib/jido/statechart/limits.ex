@@ -5,6 +5,7 @@ defmodule Jido.Statechart.Limits do
 
   @bounds %{
     xml_bytes: %{min: 1, max: 16_777_216, default: 1_048_576},
+    xml_chunks: %{min: 1, max: 1_000_000, default: 10_000},
     xml_depth: %{min: 1, max: 256, default: 64},
     xml_attributes: %{min: 0, max: 512, default: 64},
     xml_nodes: %{min: 1, max: 100_000, default: 10_000},

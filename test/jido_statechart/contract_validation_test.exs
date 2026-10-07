@@ -161,7 +161,8 @@ defmodule Jido.Statechart.ContractValidationTest do
       {"runtime_protocol_version", 1},
       {"profile_version", "other-profile"},
       {"data_model_version", "2"},
-      {"limits_version", "2"}
+      {"limits_version", "1"},
+      {"limits_version", "3"}
     ]
 
     for {field, value} <- unsupported do
