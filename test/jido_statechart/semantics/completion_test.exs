@@ -39,8 +39,18 @@ defmodule Jido.Statechart.Semantics.CompletionTest do
       </final>
       """)
 
-    session = Fixture.session(chart, status: :active, configuration: ["root"])
-    assert {:ok, result} = Macrostep.run(chart, session, %{name: "finish"}, Fixture.options())
+    registry = Fixture.registry([Fixture.target("parent")])
+
+    session =
+      Fixture.session(chart,
+        status: :active,
+        configuration: ["root"],
+        registry: registry
+      )
+
+    assert {:ok, result} =
+             Macrostep.run(chart, session, %{name: "finish"}, Fixture.options(registry: registry))
+
     assert result.session.status == :completed
     assert result.session.configuration == []
     assert result.session.completion_data == "complete"
@@ -49,7 +59,12 @@ defmodule Jido.Statechart.Semantics.CompletionTest do
     assert List.last(result.trace)["exited"] == ["done"]
 
     assert {:error, %{code: :session_completed}} =
-             Macrostep.run(chart, result.session, %{name: "again"}, Fixture.options())
+             Macrostep.run(
+               chart,
+               result.session,
+               %{name: "again"},
+               Fixture.options(registry: registry)
+             )
   end
 
   test "authored donedata failures become error.execution without invalidating completion" do

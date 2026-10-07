@@ -66,7 +66,7 @@ defmodule Jido.Statechart.SCXML.SecurityTest do
 
     text_xml =
       @prefix <>
-        ~s(<state id="s"><onentry><send><content>abc</content></send></onentry></state></scxml>)
+        ~s(<state id="s"><onentry><send event="content"><content>abc</content></send></onentry></state></scxml>)
 
     assert {:ok, _} = SCXML.compile(text_xml, limits: limit(xml_text_bytes: 3))
 
@@ -89,7 +89,7 @@ defmodule Jido.Statechart.SCXML.SecurityTest do
         ~s(<?xml version="1.0"?>) <>
         ~s(<!-- safe -->) <>
         @prefix <>
-        ~s(<state id="s"><onentry><send><content>&lt;&amp;&#65;&#x42;<![CDATA[<c>]]></content></send></onentry></state></scxml>)
+        ~s(<state id="s"><onentry><send event="content"><content>&lt;&amp;&#65;&#x42;<![CDATA[<c>]]></content></send></onentry></state></scxml>)
 
     assert {:ok, chart} = SCXML.compile_stream(Enum.map(:binary.bin_to_list(xml), &<<&1>>))
     [state] = chart.states

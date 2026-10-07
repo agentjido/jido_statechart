@@ -1,7 +1,7 @@
 <scxml xmlns="http://www.w3.org/2005/07/scxml" version="1.0" name="content" datamodel="jido">
   <state id="waiting">
     <transition event="send" target="done">
-      <send>
+      <send event="content">
         <content>Hello <![CDATA[<safe>]]> <payload xmlns="urn:example:data" code="200">world</payload>!</content>
       </send>
     </transition>

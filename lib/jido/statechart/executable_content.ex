@@ -3,6 +3,7 @@ defmodule Jido.Statechart.ExecutableContent do
 
   alias Jido.Statechart.{ActionRunner, DataModel, Diagnostic, Registry, Session}
   alias Jido.Statechart.Model.Executable
+  alias Jido.Statechart.Runtime.Intent
 
   @fatal_codes [
     :action_output_too_large,
@@ -159,10 +160,8 @@ defmodule Jido.Statechart.ExecutableContent do
   end
 
   defp execute(%Executable{kind: :send, data: data}, state, context) do
-    event_required? = is_nil(data["content"])
-
     with {:ok, event} <-
-           attribute(data, "event", "eventexpr", state, context, event_required?),
+           attribute(data, "event", "eventexpr", state, context, true),
          {:ok, target} <- attribute(data, "target", "targetexpr", state, context, false),
          {:ok, type} <- attribute(data, "type", "typeexpr", state, context, false),
          {:ok, delay} <- attribute(data, "delay", "delayexpr", state, context, false),
@@ -170,7 +169,8 @@ defmodule Jido.Statechart.ExecutableContent do
       with {:ok, send_id, allocated} <- allocate_send_id(data, state),
            {:ok, assigned} <- assign_send_id(data, send_id, allocated, context) do
         if target == "#_internal" do
-          with {:ok, event} <- required_string(event, :event) do
+          with :ok <- Intent.validate_send_type(type),
+               {:ok, event} <- required_string(event, :event) do
             append_internal_event(assigned, event, payload, context.limits, send_id)
           else
             {:error, diagnostic} -> classify(diagnostic, assigned)
@@ -200,7 +200,12 @@ defmodule Jido.Statechart.ExecutableContent do
               do: intent,
               else: Map.put(intent, "target_selected", true)
 
-          append_intent(assigned, intent, context.limits)
+          with {:ok, _resolved} <- Intent.validate_send(intent, context.registry),
+               {:ok, next} <- append_intent(assigned, intent, context.limits) do
+            {:ok, next}
+          else
+            {:error, diagnostic} -> classify(diagnostic, assigned)
+          end
         end
       else
         {:error, diagnostic, next} -> classify(diagnostic, next)
@@ -617,7 +622,7 @@ defmodule Jido.Statechart.ExecutableContent do
         not (present?(data, "id") and present?(data, "idlocation")) and
         valid_authored_send_id?(data["id"]) and optional_valid_location?(data["idlocation"]) and
         optional_valid_string?(namelist) and valid_params?(params) and
-        optional_valid_content?(content) and event_source? != content_source? and
+        optional_valid_content?(content) and event_source? and
         not (content_source? and (params != [] or present?(data, "namelist")))
 
     valid_or_error(valid, :send)

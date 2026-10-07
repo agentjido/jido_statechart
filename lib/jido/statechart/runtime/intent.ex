@@ -52,15 +52,32 @@ defmodule Jido.Statechart.Runtime.Intent do
   def from_semantic(_value, _session, _registry, _limits, _now, _options),
     do: {:error, Diagnostic.new(:invalid_runtime_intent, "Runtime intent is invalid")}
 
-  defp send_intent(value, session, registry, limits, now, generation, revision) do
+  @doc false
+  @spec validate_send(map(), Registry.t()) :: {:ok, Target.t()} | {:error, Diagnostic.t()}
+  def validate_send(%{} = value, %Registry{} = registry) when not is_struct(value) do
     event = Diagnostic.fetch(value, :event)
     target = Diagnostic.fetch(value, :target) || "#_self"
     type = Diagnostic.fetch(value, :type)
-    send_id = Diagnostic.fetch(value, :send_id)
 
     with :ok <- static_target(value),
-         :ok <- event_type(type),
-         {:ok, resolved} <- Target.resolve(target, event, registry),
+         :ok <- validate_send_type(type),
+         {:ok, resolved} <- Target.resolve(target, event, registry) do
+      {:ok, resolved}
+    end
+  end
+
+  def validate_send(_value, _registry),
+    do: {:error, Diagnostic.new(:invalid_runtime_intent, "Runtime send intent is invalid")}
+
+  @doc false
+  @spec validate_send_type(term()) :: :ok | {:error, Diagnostic.t()}
+  def validate_send_type(type), do: event_type(type)
+
+  defp send_intent(value, session, registry, limits, now, generation, revision) do
+    target = Diagnostic.fetch(value, :target) || "#_self"
+    send_id = Diagnostic.fetch(value, :send_id)
+
+    with {:ok, resolved} <- validate_send(value, registry),
          {:ok, due_at} <- Timer.due_at(Diagnostic.fetch(value, :delay), now, limits),
          :ok <- send_id(send_id),
          correlation <-

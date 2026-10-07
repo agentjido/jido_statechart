@@ -400,7 +400,7 @@ defmodule Jido.Statechart.SCXML.Validation do
              ~w(delay delayexpr)
            ]),
          :ok <- maximum_children(node, "content", 1),
-         :ok <- exactly_one_send_payload(node, contents),
+         :ok <- exactly_one_send_event(node),
          true <-
            not (attribute(node, "target") in ["_internal", "#_internal"] and
                   Enum.any?(~w(delay delayexpr), &present?(node, &1))),
@@ -527,12 +527,12 @@ defmodule Jido.Statechart.SCXML.Validation do
       else: mutually_exclusive(node, "SCXML value sources are mutually exclusive")
   end
 
-  defp exactly_one_send_payload(node, contents) do
-    count = Enum.count(~w(event eventexpr), &present?(node, &1)) + length(contents)
+  defp exactly_one_send_event(node) do
+    count = Enum.count(~w(event eventexpr), &present?(node, &1))
 
     if count == 1,
       do: :ok,
-      else: mutually_exclusive(node, "Send requires exactly one event or content source")
+      else: error(node, :invalid_element_cardinality, "Send requires exactly one event source")
   end
 
   defp meaningful_content?(node) do

@@ -50,6 +50,13 @@ Executable-content blocks run in document order. An execution error stops the
 remaining elements in that block and adds `error.execution` when the error is
 recoverable.
 
+The profile uses the default SCXML Event I/O Processor contract for `<send>`.
+Each send needs `event` or `eventexpr`. A `<content>` child is message data and
+does not replace the event. External targets must be static local Registry
+capabilities. An invalid target, unsupported type, or denied target permission
+adds `error.execution` during the same macrostep. The runtime checks the target
+capability again before it dispatches committed work.
+
 Values such as `cond`, `expr`, `location`, and `array` are restricted Jido data
 model inputs. They are identifiers or bounded expression values. They are not
 Elixir or JavaScript source.

@@ -148,7 +148,8 @@ defmodule Jido.Statechart.Semantics.MacrostepTest do
 
     registry =
       SemanticFixture.registry([
-        SemanticFixture.expression("current_event", Reference.system("_event.name"))
+        SemanticFixture.expression("current_event", Reference.system("_event.name")),
+        SemanticFixture.target("parent")
       ])
 
     session =

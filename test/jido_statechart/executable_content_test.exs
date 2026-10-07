@@ -137,7 +137,7 @@ defmodule Jido.Statechart.ExecutableContentTest do
   end
 
   test "builds send and cancel intent without changing the current event" do
-    registry = registry([expression("payload", 7)])
+    registry = registry([expression("payload", 7), target("parent")])
 
     commands = [
       executable(:send, 0, %{
@@ -198,7 +198,7 @@ defmodule Jido.Statechart.ExecutableContentTest do
     assert {:ok, result} =
              ExecutableContent.run([command], state,
                data_model: JidoDataModel,
-               registry: registry([]),
+               registry: registry([target("parent")]),
                limits: Limits.default()
              )
 
@@ -232,7 +232,7 @@ defmodule Jido.Statechart.ExecutableContentTest do
     assert {:ok, next_result} =
              ExecutableContent.run([command], next_state,
                data_model: JidoDataModel,
-               registry: registry([]),
+               registry: registry([target("parent")]),
                limits: Limits.default()
              )
 
@@ -270,24 +270,34 @@ defmodule Jido.Statechart.ExecutableContentTest do
     assert result.generated_id_counter == 0
   end
 
-  test "accepts content-only send and prevalidates malformed commands" do
+  test "rejects content-only send and prevalidates malformed commands" do
     commands = [
       executable(:send, 0, %{
         "content" => %{"items" => [%{"kind" => "text", "value" => "body"}]}
       })
     ]
 
-    assert {:ok, result} =
+    assert {:error, %{code: :invalid_executable_content}} =
              ExecutableContent.run(commands, %{},
                data_model: JidoDataModel,
                registry: registry([]),
                limits: Limits.default()
              )
 
-    assert [%{"event" => nil, "data" => "body", "send_id" => nil}] =
-             result.intents
+    event_with_content =
+      executable(:send, 0, %{
+        "event" => "notice",
+        "content" => %{"items" => [%{"kind" => "text", "value" => "body"}]}
+      })
 
-    assert result.generated_id_counter == 0
+    assert {:ok, result} =
+             ExecutableContent.run([event_with_content], %{},
+               data_model: JidoDataModel,
+               registry: registry([]),
+               limits: Limits.default()
+             )
+
+    assert [%{"event" => "notice", "data" => "body", "send_id" => nil}] = result.intents
 
     malformed = [
       executable(:log, 0, %{"label" => "must-not-run"}),
@@ -344,6 +354,35 @@ defmodule Jido.Statechart.ExecutableContentTest do
              result.internal_queue
   end
 
+  test "converts send target, type, and permission failures to error.execution" do
+    denied_permissions = ["delivery:at_least_once", "idempotency:operation_id"]
+
+    cases = [
+      {executable(:send, 0, %{"event" => "notice", "target" => "bad target"}), registry([]),
+       :invalid_runtime_target},
+      {executable(:send, 0, %{"event" => "notice", "type" => "urn:unsupported"}), registry([]),
+       :unsupported_send_type},
+      {executable(:send, 0, %{"event" => "notice", "target" => "parent"}),
+       registry([target("parent", denied_permissions)]), :target_permission_denied}
+    ]
+
+    for {command, registry, code} <- cases do
+      assert {:ok, result} =
+               ExecutableContent.run([command], %{},
+                 data_model: JidoDataModel,
+                 registry: registry,
+                 limits: Limits.default()
+               )
+
+      assert result.intents == []
+
+      assert [%{"name" => "error.execution", "data" => %{"code" => error_code}}] =
+               result.internal_queue
+
+      assert error_code == Atom.to_string(code)
+    end
+  end
+
   test "enforces data bytes on complete log, event, and intent aggregates" do
     commands = [
       {executable(:log, 0, %{"label" => "bounded"}), :logs},
@@ -355,7 +394,7 @@ defmodule Jido.Statechart.ExecutableContentTest do
       assert {:ok, first} =
                ExecutableContent.run([command], %{},
                  data_model: JidoDataModel,
-                 registry: registry([]),
+                 registry: registry([target("parent")]),
                  limits: Limits.default()
                )
 
@@ -366,7 +405,7 @@ defmodule Jido.Statechart.ExecutableContentTest do
       assert {:error, %{code: :data_limit_exceeded}} =
                ExecutableContent.run([command], state,
                  data_model: JidoDataModel,
-                 registry: registry([]),
+                 registry: registry([target("parent")]),
                  limits: limited
                )
     end
@@ -578,6 +617,21 @@ defmodule Jido.Statechart.ExecutableContentTest do
       handler: {:expression, value}
     }
   end
+
+  defp target(
+         name,
+         permissions \\ ["delivery:at_least_once", "idempotency:operation_id", "send:event"]
+       ) do
+    %{
+      kind: :target,
+      alias: name,
+      permissions: permissions,
+      handler: __MODULE__
+    }
+  end
+
+  def idempotency, do: :operation_id
+  def deliver(_signal, _operation_id, _context), do: :ok
 
   defp registry(entries), do: Registry.new!(%{version: "registry-1", entries: entries})
 

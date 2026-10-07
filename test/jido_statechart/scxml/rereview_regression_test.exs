@@ -74,7 +74,7 @@ defmodule Jido.Statechart.SCXML.RereviewRegressionTest do
 
     safe =
       document(
-        ~s(<!-- &custom; --><state id="s"><onentry><send><content><![CDATA[&custom;]]></content></send></onentry></state>)
+        ~s(<!-- &custom; --><state id="s"><onentry><send event="content"><content><![CDATA[&custom;]]></content></send></onentry></state>)
       )
 
     assert {:ok, chart} = SCXML.compile_stream(Enum.map(:binary.bin_to_list(safe), &<<&1>>))
@@ -88,14 +88,14 @@ defmodule Jido.Statechart.SCXML.RereviewRegressionTest do
   test "foreign inline element IDs do not join the SCXML ID namespace" do
     xml =
       document(
-        ~s(<state id="same"><onentry><send><content><send xmlns="urn:data" id="same"/></content></send></onentry></state>)
+        ~s(<state id="same"><onentry><send event="content"><content><send xmlns="urn:data" id="same"/></content></send></onentry></state>)
       )
 
     assert {:ok, _chart} = SCXML.compile(xml)
 
     scxml_id =
       document(
-        ~s(<state id="same"><onentry><send><content><state id="same"/></content></send></onentry></state>)
+        ~s(<state id="same"><onentry><send event="content"><content><state id="same"/></content></send></onentry></state>)
       )
 
     assert {:error, %Diagnostic{code: :duplicate_id}} = SCXML.compile(scxml_id)

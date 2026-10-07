@@ -82,12 +82,19 @@ defmodule Jido.Statechart.SCXML.ReviewRegressionTest do
     end
   end
 
+  test "requires an event when send has content" do
+    assert {:error, %Diagnostic{code: :invalid_element_cardinality}} =
+             SCXML.compile(
+               state_document(~s(<onentry><send><content>body</content></send></onentry>))
+             )
+  end
+
   test "preserves one ordered mixed-content sequence across CDATA, elements, and chunks" do
     xml =
       document("""
       <state id="s">
         <onentry>
-          <send><content>one<![CDATA[<two>]]><item xmlns="urn:data">three</item>four</content></send>
+          <send event="content"><content>one<![CDATA[<two>]]><item xmlns="urn:data">three</item>four</content></send>
         </onentry>
       </state>
       """)
@@ -153,7 +160,7 @@ defmodule Jido.Statechart.SCXML.ReviewRegressionTest do
       document("""
       <state id="s">
         <onentry>
-          <send><content><plain xmlns=""><child/><bound xmlns="#{@scxml}"><leaf/></bound></plain></content></send>
+          <send event="content"><content><plain xmlns=""><child/><bound xmlns="#{@scxml}"><leaf/></bound></plain></content></send>
         </onentry>
       </state>
       """)

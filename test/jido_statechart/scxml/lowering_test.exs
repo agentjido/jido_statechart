@@ -93,7 +93,7 @@ defmodule Jido.Statechart.SCXML.LoweringTest do
           <if cond="ready"><log label="yes" expr="message"/><elseif cond="later"/><else/></if>
           <foreach array="items" item="item" index="index"><assign location="seen" expr="item"/></foreach>
           <send event="notice" target="parent"><param name="id" expr="item"/></send>
-          <send><content>body</content></send>
+          <send event="content"><content>body</content></send>
           <cancel sendid="pending"/>
           <j:action id="record" params="{}"/>
         </onentry>

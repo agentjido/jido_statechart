@@ -3,6 +3,13 @@ defmodule Jido.Statechart.SemanticFixture do
 
   alias Jido.Statechart.{Limits, Profile, Registry, SCXML, Session}
 
+  defmodule TargetAdapter do
+    @moduledoc false
+
+    def idempotency, do: :operation_id
+    def deliver(_signal, _operation_id, _context), do: :ok
+  end
+
   def chart(body, options \\ []) do
     datamodel = Keyword.get(options, :datamodel, "null")
     binding = Keyword.get(options, :binding, "early")
@@ -34,6 +41,18 @@ defmodule Jido.Statechart.SemanticFixture do
         "read:system"
       ],
       handler: {:expression, value}
+    }
+  end
+
+  def target(
+        name,
+        permissions \\ ["delivery:at_least_once", "idempotency:operation_id", "send:event"]
+      ) do
+    %{
+      kind: :target,
+      alias: name,
+      permissions: permissions,
+      handler: TargetAdapter
     }
   end
 

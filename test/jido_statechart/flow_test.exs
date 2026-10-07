@@ -165,6 +165,39 @@ defmodule Jido.Statechart.FlowTest do
     assert {:ok, ^result} = result |> Result.dump() |> Result.new()
   end
 
+  test "an invalid static send target raises error.execution inside the macrostep" do
+    chart =
+      SemanticFixture.chart("""
+      <state id="root" initial="sending">
+        <state id="sending">
+          <transition event="go" target="waiting">
+            <send event="outside" target="https://example.invalid/events"/>
+          </transition>
+        </state>
+        <state id="waiting">
+          <transition event="error.execution" target="recovered"/>
+        </state>
+        <final id="recovered"/>
+      </state>
+      """)
+
+    registry = SemanticFixture.registry()
+
+    session =
+      SemanticFixture.session(chart,
+        status: :active,
+        configuration: ["sending"],
+        registry: registry
+      )
+
+    assert {:ok, %Result{} = result} =
+             Flow.step(chart, session, %{name: "go"}, registry)
+
+    assert result.session.configuration == ["recovered"]
+    assert result.intents == []
+    assert Enum.any?(result.trace, &(&1["event"] == "error.execution"))
+  end
+
   test "operation occurrences are unique, durable, and deterministic" do
     chart =
       SemanticFixture.chart("""
