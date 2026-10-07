@@ -4,7 +4,8 @@ defmodule Jido.Statechart.Plugin.Persistence do
   alias Jido.Persistence.Plugin.Context
   alias Jido.Statechart.{Limits, Plugin, Registry, Session}
 
-  @checkpoint_version 3
+  @checkpoint_version 4
+  @version_three 3
   @version_two 2
   @version_one 1
   @fields [
@@ -55,13 +56,35 @@ defmodule Jido.Statechart.Plugin.Persistence do
   @doc false
   def migrate(%{"checkpoint_version" => @checkpoint_version} = value, _opts), do: {:ok, value}
 
-  def migrate(%{"checkpoint_version" => @version_two} = value, opts) do
-    with {:ok, config} <- contract(opts),
-         true <- Map.keys(value) |> Enum.sort() == Enum.sort(@version_two_fields) do
+  def migrate(%{"checkpoint_version" => @version_three} = value, _opts) do
+    with true <- Map.keys(value) |> Enum.sort() == Enum.sort(@fields),
+         {:ok, session} <- migrate_session(value["session"]) do
       {:ok,
        value
        |> Map.put("checkpoint_version", @checkpoint_version)
-       |> Map.put("duplicate_window", config.duplicate_window)}
+       |> Map.put(
+         "runtime_protocol_version",
+         Session.contract_versions().runtime_protocol_version
+       )
+       |> Map.put("session", session)}
+    else
+      _other -> {:error, :invalid_statechart_v3_checkpoint}
+    end
+  end
+
+  def migrate(%{"checkpoint_version" => @version_two} = value, opts) do
+    with {:ok, config} <- contract(opts),
+         true <- Map.keys(value) |> Enum.sort() == Enum.sort(@version_two_fields),
+         {:ok, session} <- migrate_session(value["session"]) do
+      {:ok,
+       value
+       |> Map.put("checkpoint_version", @checkpoint_version)
+       |> Map.put(
+         "runtime_protocol_version",
+         Session.contract_versions().runtime_protocol_version
+       )
+       |> Map.put("duplicate_window", config.duplicate_window)
+       |> Map.put("session", session)}
     else
       _other -> {:error, :invalid_statechart_v2_checkpoint}
     end
@@ -70,9 +93,10 @@ defmodule Jido.Statechart.Plugin.Persistence do
   def migrate(%{"checkpoint_version" => @version_one} = value, opts) do
     with {:ok, config} <- contract(opts),
          true <- Map.keys(value) |> Enum.sort() == ["checkpoint_version", "session", "signal_ids"],
-         ids when is_list(ids) <- value["signal_ids"] do
+         ids when is_list(ids) <- value["signal_ids"],
+         {:ok, session} <- migrate_session(value["session"]) do
       state = %{
-        session: value["session"],
+        session: session,
         recent_signal_ids: ids
       }
 
@@ -157,6 +181,48 @@ defmodule Jido.Statechart.Plugin.Persistence do
 
   defp load_session(nil), do: {:ok, nil}
   defp load_session(value), do: Session.load(value)
+
+  defp migrate_session(nil), do: {:ok, nil}
+
+  defp migrate_session(session) when is_map(session) do
+    versions = Session.contract_versions()
+
+    with true <- Map.get(session, "schema_version") == 1,
+         true <- Map.get(session, "runtime_protocol_version") == 1,
+         operations when is_map(operations) <- Map.get(session, "operations"),
+         tombstones when is_map(tombstones) <- Map.get(session, "operation_tombstones"),
+         {:ok, high_water} <- legacy_high_water(operations, tombstones) do
+      {:ok,
+       session
+       |> Map.put("schema_version", versions.schema_version)
+       |> Map.put("runtime_protocol_version", versions.runtime_protocol_version)
+       |> Map.put("operation_high_water", high_water)
+       |> Map.put("received_operation_ids", [])}
+    else
+      _other -> {:error, :unsupported_statechart_session_migration}
+    end
+  end
+
+  defp migrate_session(_session), do: {:error, :unsupported_statechart_session_migration}
+
+  defp legacy_high_water(operations, tombstones) do
+    (Map.values(operations) ++ Map.values(tombstones))
+    |> Enum.reduce_while({:ok, %{}}, fn record, {:ok, acc} ->
+      key = Map.get(record, "key")
+      generation = Map.get(record, "generation")
+
+      cond do
+        is_nil(key) ->
+          {:cont, {:ok, acc}}
+
+        is_binary(key) and key != "" and is_integer(generation) and generation >= 0 ->
+          {:cont, {:ok, Map.update(acc, key, generation, &max(&1, generation))}}
+
+        true ->
+          {:halt, {:error, :unsupported_statechart_session_migration}}
+      end
+    end)
+  end
 
   defp contract(opts) when is_list(opts) do
     if Keyword.keyword?(opts),

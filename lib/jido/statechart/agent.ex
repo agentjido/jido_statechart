@@ -11,13 +11,17 @@ defmodule Jido.Statechart.Agent do
 
   @initialization_signal "jido.statechart.initialize"
   @cleanup_signal "jido.statechart.cleanup.confirmed"
+  @timer_signal "jido.statechart.timer"
+  @delivery_signal "jido.statechart.delivery"
+  @child_signal "jido.statechart.child"
+  @reconciliation_signal "jido.statechart.reconcile"
   @reserved_signals [
     @initialization_signal,
     @cleanup_signal,
-    "jido.statechart.timer",
-    "jido.statechart.delivery",
-    "jido.statechart.child",
-    "jido.statechart.reconcile"
+    @timer_signal,
+    @delivery_signal,
+    @child_signal,
+    @reconciliation_signal
   ]
 
   @doc "Initializes one live statechart session in an authenticated Turn."
@@ -36,6 +40,15 @@ defmodule Jido.Statechart.Agent do
   @doc false
   @spec cleanup_signal_type() :: String.t()
   def cleanup_signal_type, do: @cleanup_signal
+
+  @doc false
+  def timer_signal_type, do: @timer_signal
+
+  @doc false
+  def delivery_signal_type, do: @delivery_signal
+
+  @doc false
+  def reconciliation_signal_type, do: @reconciliation_signal
 
   @doc "Returns the closed set of runtime-owned Signal types."
   @spec reserved_signal_types() :: [String.t()]

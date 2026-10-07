@@ -9,8 +9,8 @@ defmodule Jido.Statechart.Session do
 
   alias Jido.Statechart.{Diagnostic, Limits, Profile, Registry}
 
-  @schema_version 1
-  @runtime_protocol_version 1
+  @schema_version 2
+  @runtime_protocol_version 2
   @data_model_version "1"
   @limits_version "1"
   @generated_id_prefix "__jido_scxml_generated_"
@@ -35,6 +35,8 @@ defmodule Jido.Statechart.Session do
               :revision_fence,
               :generated_id_counter,
               :operation_counter,
+              :operation_high_water,
+              :received_operation_ids,
               :initialized_data_state_ids,
               :configuration,
               :history,
@@ -70,11 +72,13 @@ defmodule Jido.Statechart.Session do
       :session_incarnation,
       :kind,
       :target,
+      :key,
       :payload_digest,
       :due_at,
       :generation,
       :state,
       :attempt_count,
+      :next_attempt_at,
       :created_revision,
       :result_revision,
       :result,
@@ -87,11 +91,13 @@ defmodule Jido.Statechart.Session do
               session_incarnation: nil,
               kind: nil,
               target: nil,
+              key: nil,
               payload_digest: nil,
               due_at: nil,
               generation: 0,
               state: :not_started,
               attempt_count: 0,
+              next_attempt_at: nil,
               created_revision: 0,
               result_revision: nil,
               result: nil,
@@ -128,8 +134,10 @@ defmodule Jido.Statechart.Session do
            {:ok, session_incarnation} <- required_id(attrs, :session_incarnation),
            {:ok, kind} <- enum(Diagnostic.fetch(attrs, :kind), @kinds, :invalid_operation_kind),
            {:ok, target} <- Diagnostic.require_string(attrs, :target, [:operation]),
+           {:ok, _key} <- Diagnostic.optional_string(attrs, :key, [:operation]),
            {:ok, payload_digest} <- digest(Diagnostic.fetch(attrs, :payload_digest)),
-           {:ok, due_at} <- Diagnostic.optional_string(attrs, :due_at, [:operation]),
+           {:ok, due_at} <- timestamp(Diagnostic.fetch(attrs, :due_at), :due_at),
+           :ok <- valid_due_at(kind, due_at),
            {:ok, generation} <- nonnegative(Diagnostic.fetch(attrs, :generation, 0), :generation) do
         identity = %{
           "identity_version" => identity_version,
@@ -156,6 +164,7 @@ defmodule Jido.Statechart.Session do
            {:ok, session_incarnation} <- required_id(attrs, :session_incarnation),
            {:ok, kind} <- enum(Diagnostic.fetch(attrs, :kind), @kinds, :invalid_operation_kind),
            {:ok, target} <- Diagnostic.require_string(attrs, :target, [:operation]),
+           {:ok, key} <- Diagnostic.optional_string(attrs, :key, [:operation]),
            {:ok, payload_digest} <- digest(Diagnostic.fetch(attrs, :payload_digest)),
            {:ok, due_at} <- Diagnostic.optional_string(attrs, :due_at, [:operation]),
            {:ok, generation} <- nonnegative(Diagnostic.fetch(attrs, :generation, 0), :generation),
@@ -169,6 +178,8 @@ defmodule Jido.Statechart.Session do
              ),
            {:ok, attempt_count} <-
              nonnegative(Diagnostic.fetch(attrs, :attempt_count, 0), :attempt_count),
+           {:ok, next_attempt_at} <-
+             timestamp(Diagnostic.fetch(attrs, :next_attempt_at), :next_attempt_at),
            {:ok, created_revision} <-
              nonnegative(Diagnostic.fetch(attrs, :created_revision, 0), :created_revision),
            {:ok, result_revision} <-
@@ -182,10 +193,12 @@ defmodule Jido.Statechart.Session do
              ),
            {:ok, correlation} <-
              portable_map(Diagnostic.fetch(attrs, :correlation, %{}), :correlation),
+           :ok <- payload_matches_correlation(payload_digest, correlation),
            :ok <-
              valid_combination(
                state,
                attempt_count,
+               next_attempt_at,
                created_revision,
                result_revision,
                result,
@@ -198,11 +211,13 @@ defmodule Jido.Statechart.Session do
            session_incarnation: session_incarnation,
            kind: kind,
            target: target,
+           key: key,
            payload_digest: payload_digest,
            due_at: due_at,
            generation: generation,
            state: state,
            attempt_count: attempt_count,
+           next_attempt_at: next_attempt_at,
            created_revision: created_revision,
            result_revision: result_revision,
            result: result,
@@ -217,7 +232,7 @@ defmodule Jido.Statechart.Session do
 
     @spec dump(t()) :: map()
     def dump(%__MODULE__{} = operation) do
-      %{
+      base = %{
         "id" => operation.id,
         "identity_version" => operation.identity_version,
         "session_incarnation" => operation.session_incarnation,
@@ -234,6 +249,10 @@ defmodule Jido.Statechart.Session do
         "retention_class" => Atom.to_string(operation.retention_class),
         "correlation" => operation.correlation
       }
+
+      base
+      |> maybe_put("key", operation.key)
+      |> maybe_put("next_attempt_at", operation.next_attempt_at)
     end
 
     @spec terminal?(t()) :: boolean()
@@ -330,6 +349,57 @@ defmodule Jido.Statechart.Session do
     defp optional_nonnegative(nil, _field), do: {:ok, nil}
     defp optional_nonnegative(value, field), do: nonnegative(value, field)
 
+    defp timestamp(nil, _field), do: {:ok, nil}
+
+    defp timestamp(value, field) when is_binary(value) do
+      case DateTime.from_iso8601(value) do
+        {:ok, _datetime, 0} -> {:ok, value}
+        _other -> invalid_timestamp(field)
+      end
+    end
+
+    defp timestamp(_value, field), do: invalid_timestamp(field)
+
+    defp invalid_timestamp(field) do
+      {:error,
+       Diagnostic.new(
+         :invalid_operation_timestamp,
+         "operation timestamp must be UTC ISO 8601 text",
+         path: [:operation, field]
+       )}
+    end
+
+    defp valid_due_at(:timer, due_at) when is_binary(due_at), do: :ok
+
+    defp valid_due_at(kind, nil)
+         when kind in [:send, :invoke, :cancel, :child_start, :child_stop],
+         do: :ok
+
+    defp valid_due_at(_kind, _due_at) do
+      {:error,
+       Diagnostic.new(
+         :invalid_operation_due_at,
+         "Operation due time does not match its kind",
+         path: [:operation, :due_at]
+       )}
+    end
+
+    defp payload_matches_correlation(payload_digest, correlation) do
+      if Diagnostic.digest(correlation) == payload_digest do
+        :ok
+      else
+        {:error,
+         Diagnostic.new(
+           :operation_payload_digest_mismatch,
+           "Operation payload digest does not match its correlation",
+           path: [:operation, :payload_digest]
+         )}
+      end
+    end
+
+    defp maybe_put(map, _key, nil), do: map
+    defp maybe_put(map, key, value), do: Map.put(map, key, value)
+
     defp portable(value, field) do
       with :ok <- Diagnostic.portable(value, [:operation, field]), do: {:ok, value}
     end
@@ -347,6 +417,7 @@ defmodule Jido.Statechart.Session do
     defp valid_combination(
            :not_started,
            0,
+           nil,
            _created_revision,
            nil,
            nil,
@@ -357,6 +428,7 @@ defmodule Jido.Statechart.Session do
     defp valid_combination(
            state,
            attempts,
+           nil,
            _created_revision,
            nil,
            nil,
@@ -366,14 +438,43 @@ defmodule Jido.Statechart.Session do
          do: :ok
 
     defp valid_combination(
-           :retryable_failure,
+           :cancel_requested,
            attempts,
+           nil,
            created_revision,
            result_revision,
            result,
            :active
          )
          when attempts >= 1 and is_integer(result_revision) and
+                result_revision >= created_revision and not is_nil(result),
+         do: :ok
+
+    defp valid_combination(
+           :result_unknown,
+           attempts,
+           next_attempt_at,
+           created_revision,
+           result_revision,
+           result,
+           :active
+         )
+         when attempts >= 1 and (is_nil(next_attempt_at) or is_binary(next_attempt_at)) and
+                is_integer(result_revision) and
+                result_revision >= created_revision and not is_nil(result),
+         do: :ok
+
+    defp valid_combination(
+           :retryable_failure,
+           attempts,
+           next_attempt_at,
+           created_revision,
+           result_revision,
+           result,
+           :active
+         )
+         when attempts >= 1 and (is_nil(next_attempt_at) or is_binary(next_attempt_at)) and
+                is_integer(result_revision) and
                 result_revision >= created_revision and
                 not is_nil(result),
          do: :ok
@@ -381,6 +482,7 @@ defmodule Jido.Statechart.Session do
     defp valid_combination(
            state,
            attempts,
+           nil,
            created_revision,
            result_revision,
            result,
@@ -392,8 +494,22 @@ defmodule Jido.Statechart.Session do
          do: :ok
 
     defp valid_combination(
+           :canceled,
+           0,
+           nil,
+           created_revision,
+           result_revision,
+           result,
+           retention_class
+         )
+         when is_integer(result_revision) and result_revision >= created_revision and
+                not is_nil(result) and retention_class in [:terminal, :audit],
+         do: :ok
+
+    defp valid_combination(
            _state,
            _attempts,
+           _next_attempt_at,
            _created_revision,
            _result_revision,
            _result,
@@ -420,6 +536,7 @@ defmodule Jido.Statechart.Session do
       :session_incarnation,
       :kind,
       :target,
+      :key,
       :payload_digest,
       :due_at,
       :generation,
@@ -434,6 +551,7 @@ defmodule Jido.Statechart.Session do
               session_incarnation: nil,
               kind: nil,
               target: nil,
+              key: nil,
               payload_digest: nil,
               due_at: nil,
               generation: 0,
@@ -452,6 +570,7 @@ defmodule Jido.Statechart.Session do
         session_incarnation: operation.session_incarnation,
         kind: operation.kind,
         target: operation.target,
+        key: operation.key,
         payload_digest: operation.payload_digest,
         due_at: operation.due_at,
         generation: operation.generation,
@@ -469,6 +588,7 @@ defmodule Jido.Statechart.Session do
            {:ok, derived_id} <- Operation.identity(identity_attrs),
            true <- Diagnostic.fetch(attrs, :id) == derived_id,
            generation = identity_attrs.generation,
+           key = Diagnostic.fetch(attrs, :key),
            state = Diagnostic.fetch(attrs, :state),
            digest = Diagnostic.fetch(attrs, :outcome_digest),
            revision = Diagnostic.fetch(attrs, :result_revision),
@@ -483,6 +603,7 @@ defmodule Jido.Statechart.Session do
            session_incarnation: identity_attrs.session_incarnation,
            kind: identity_attrs.kind,
            target: identity_attrs.target,
+           key: key,
            payload_digest: identity_attrs.payload_digest,
            due_at: identity_attrs.due_at,
            generation: generation,
@@ -502,7 +623,7 @@ defmodule Jido.Statechart.Session do
 
     @spec dump(t()) :: map()
     def dump(%__MODULE__{} = tombstone) do
-      %{
+      base = %{
         "id" => tombstone.id,
         "identity_version" => tombstone.identity_version,
         "session_incarnation" => tombstone.session_incarnation,
@@ -516,6 +637,8 @@ defmodule Jido.Statechart.Session do
         "result_revision" => tombstone.result_revision,
         "retention_class" => Atom.to_string(tombstone.retention_class)
       }
+
+      if is_nil(tombstone.key), do: base, else: Map.put(base, "key", tombstone.key)
     end
 
     defp identity_attrs(attrs) do
@@ -529,19 +652,39 @@ defmodule Jido.Statechart.Session do
         generation: Diagnostic.fetch(attrs, :generation)
       }
 
-      with {:ok, operation} <- Operation.new(identity_attrs) do
+      with {:ok, _id} <- Operation.identity(identity_attrs),
+           {:ok, kind} <- operation_kind(identity_attrs.kind) do
         {:ok,
          %{
-           identity_version: operation.identity_version,
-           session_incarnation: operation.session_incarnation,
-           kind: operation.kind,
-           target: operation.target,
-           payload_digest: operation.payload_digest,
-           due_at: operation.due_at,
-           generation: operation.generation
+           identity_version: identity_attrs.identity_version,
+           session_incarnation: identity_attrs.session_incarnation,
+           kind: kind,
+           target: identity_attrs.target,
+           payload_digest: identity_attrs.payload_digest,
+           due_at: identity_attrs.due_at,
+           generation: identity_attrs.generation
          }}
       end
     end
+
+    defp operation_kind(value)
+         when value in [:send, :timer, :invoke, :cancel, :child_start, :child_stop],
+         do: {:ok, value}
+
+    defp operation_kind(value) when is_binary(value) do
+      case value do
+        "send" -> {:ok, :send}
+        "timer" -> {:ok, :timer}
+        "invoke" -> {:ok, :invoke}
+        "cancel" -> {:ok, :cancel}
+        "child_start" -> {:ok, :child_start}
+        "child_stop" -> {:ok, :child_stop}
+        _other -> {:error, Diagnostic.new(:invalid_tombstone, "operation kind is invalid")}
+      end
+    end
+
+    defp operation_kind(_value),
+      do: {:error, Diagnostic.new(:invalid_tombstone, "operation kind is invalid")}
 
     defp retention_class(value) when value in [:terminal, :audit], do: {:ok, value}
 
@@ -589,6 +732,8 @@ defmodule Jido.Statechart.Session do
             revision_fence: 0,
             generated_id_counter: 0,
             operation_counter: 0,
+            operation_high_water: %{},
+            received_operation_ids: [],
             initialized_data_state_ids: [],
             configuration: [],
             history: %{},
@@ -644,6 +789,13 @@ defmodule Jido.Statechart.Session do
          {:ok, generated_id_counter} <- nonnegative(attrs, :generated_id_counter, 0),
          :ok <- required_counter(attrs, :operation_counter, strict?),
          {:ok, operation_counter} <- nonnegative(attrs, :operation_counter, 0),
+         :ok <- required_stored_field(attrs, :operation_high_water, strict?),
+         {:ok, operation_high_water} <-
+           operation_high_water(Diagnostic.fetch(attrs, :operation_high_water, %{})),
+         :ok <- required_stored_field(attrs, :received_operation_ids, strict?),
+         {:ok, received_operation_ids} <-
+           ids(Diagnostic.fetch(attrs, :received_operation_ids, []), :received_operation_ids),
+         :ok <- unique_ids(received_operation_ids, :received_operation_ids),
          :ok <- required_ids(attrs, :initialized_data_state_ids, strict?),
          {:ok, initialized_data_state_ids} <-
            ids(
@@ -660,11 +812,14 @@ defmodule Jido.Statechart.Session do
          {:ok, tombstones} <- tombstones(Diagnostic.fetch(attrs, :operation_tombstones, %{})),
          :ok <- disjoint_operations(operations, tombstones),
          :ok <- operation_incarnations(operations, tombstones, incarnation),
+         :ok <- validate_operation_high_water(operation_high_water, operations, tombstones),
+         :ok <- validate_received_operations(received_operation_ids, operations),
          :ok <-
            ledger_fences(
              revision,
              revision_fence,
              operation_counter,
+             operation_high_water,
              operations,
              tombstones
            ),
@@ -686,6 +841,8 @@ defmodule Jido.Statechart.Session do
            revision_fence: revision_fence,
            generated_id_counter: generated_id_counter,
            operation_counter: operation_counter,
+           operation_high_water: operation_high_water,
+           received_operation_ids: received_operation_ids,
            initialized_data_state_ids: initialized_data_state_ids,
            configuration: configuration,
            history: history,
@@ -790,6 +947,20 @@ defmodule Jido.Statechart.Session do
              limits.terminal_records,
              :terminal_record_limit_exceeded,
              "Terminal operation record limit was reached"
+           ),
+         :ok <-
+           maximum(
+             length(session.received_operation_ids),
+             limits.pending_sends + limits.pending_timers,
+             :receiver_receipt_limit_exceeded,
+             "Receiver receipt limit was reached"
+           ),
+         :ok <-
+           maximum(
+             map_size(session.operation_high_water),
+             limits.pending_sends + limits.pending_timers + limits.terminal_records,
+             :operation_high_water_limit_exceeded,
+             "Operation generation high-water limit was reached"
            ),
          :ok <- session_size(session, limits.session_bytes) do
       :ok
@@ -910,7 +1081,26 @@ defmodule Jido.Statechart.Session do
       |> Enum.take(keep)
       |> Map.new(&{&1.id, &1})
 
-    %{session | operations: active_operations, operation_tombstones: terminal_records}
+    high_water =
+      (Map.values(session.operations) ++ Map.values(session.operation_tombstones))
+      |> Enum.reduce(session.operation_high_water, fn record, acc ->
+        if is_binary(record.key) do
+          Map.update(acc, record.key, record.generation, &max(&1, record.generation))
+        else
+          acc
+        end
+      end)
+
+    received_ids =
+      Enum.filter(session.received_operation_ids, &Map.has_key?(active_operations, &1))
+
+    %{
+      session
+      | operations: active_operations,
+        operation_tombstones: terminal_records,
+        operation_high_water: high_water,
+        received_operation_ids: received_ids
+    }
   end
 
   @doc "Returns the portable stored form of a session."
@@ -967,6 +1157,7 @@ defmodule Jido.Statechart.Session do
             result: result,
             result_revision: revision,
             attempt_count: max(operation.attempt_count, 1),
+            next_attempt_at: next_attempt_at(state, result),
             retention_class: retention_class
         }
 
@@ -1012,12 +1203,24 @@ defmodule Jido.Statechart.Session do
   end
 
   defp result_state(state)
-       when state in [:confirmed_complete, :retryable_failure, :permanent_failure, :canceled],
+       when state in [
+              :confirmed_complete,
+              :result_unknown,
+              :retryable_failure,
+              :permanent_failure,
+              :canceled
+            ],
        do: {:ok, state}
 
   defp result_state(state) when is_binary(state) do
     case Enum.find(
-           [:confirmed_complete, :retryable_failure, :permanent_failure, :canceled],
+           [
+             :confirmed_complete,
+             :result_unknown,
+             :retryable_failure,
+             :permanent_failure,
+             :canceled
+           ],
            &(Atom.to_string(&1) == state)
          ) do
       nil -> operation_error(:invalid_operation_result, "operation result state is invalid")
@@ -1027,6 +1230,14 @@ defmodule Jido.Statechart.Session do
 
   defp result_state(_state),
     do: operation_error(:invalid_operation_result, "operation result state is invalid")
+
+  defp next_attempt_at(:retryable_failure, result) when is_map(result),
+    do: Map.get(result, "next_attempt_at") || Map.get(result, :next_attempt_at)
+
+  defp next_attempt_at(:result_unknown, result) when is_map(result),
+    do: Map.get(result, "next_attempt_at") || Map.get(result, :next_attempt_at)
+
+  defp next_attempt_at(_state, _result), do: nil
 
   defp legal_result_transition?(from, :canceled), do: from == :cancel_requested
 
@@ -1238,7 +1449,82 @@ defmodule Jido.Statechart.Session do
     end
   end
 
-  defp ledger_fences(revision, revision_fence, operation_counter, operations, tombstones) do
+  defp operation_high_water(value) when is_map(value) and not is_struct(value) do
+    Enum.reduce_while(value, {:ok, %{}}, fn {key, generation}, {:ok, acc} ->
+      if is_binary(key) and key != "" and String.valid?(key) and is_integer(generation) and
+           generation >= 0 do
+        {:cont, {:ok, Map.put(acc, key, generation)}}
+      else
+        {:halt,
+         {:error,
+          Diagnostic.new(
+            :invalid_operation_high_water,
+            "Operation generation high-water map is invalid",
+            path: [:session, :operation_high_water]
+          )}}
+      end
+    end)
+  end
+
+  defp operation_high_water(_value) do
+    {:error,
+     Diagnostic.new(
+       :invalid_operation_high_water,
+       "Operation generation high-water map is invalid",
+       path: [:session, :operation_high_water]
+     )}
+  end
+
+  defp validate_operation_high_water(high_water, operations, tombstones) do
+    records = Map.values(operations) ++ Map.values(tombstones)
+
+    case Enum.find(records, fn record ->
+           is_binary(record.key) and Map.get(high_water, record.key, -1) < record.generation
+         end) do
+      nil ->
+        :ok
+
+      record ->
+        {:error,
+         Diagnostic.new(
+           :invalid_operation_high_water,
+           "Operation generation exceeds its keyed high-water mark",
+           path: [:session, :operation_high_water, record.key]
+         )}
+    end
+  end
+
+  defp validate_received_operations(received_ids, operations) do
+    case Enum.find(received_ids, fn id ->
+           case Map.get(operations, id) do
+             %Operation{kind: kind, target: target} ->
+               kind not in [:send, :timer] or target not in ["self", "#_self"]
+
+             _other ->
+               true
+           end
+         end) do
+      nil ->
+        :ok
+
+      id ->
+        {:error,
+         Diagnostic.new(
+           :invalid_receiver_receipt,
+           "Receiver receipt has no matching self-delivery operation",
+           path: [:session, :received_operation_ids, id]
+         )}
+    end
+  end
+
+  defp ledger_fences(
+         revision,
+         revision_fence,
+         operation_counter,
+         operation_high_water,
+         operations,
+         tombstones
+       ) do
     cond do
       revision_fence < revision ->
         {:error,
@@ -1274,6 +1560,14 @@ defmodule Jido.Statechart.Session do
            path: [:session, :operation_tombstones, tombstone.id]
          )}
 
+      Enum.any?(operation_high_water, fn {_key, generation} -> generation >= operation_counter end) ->
+        {:error,
+         Diagnostic.new(
+           :invalid_operation_fence,
+           "Operation high-water generation exceeds its session fence",
+           path: [:session, :operation_high_water]
+         )}
+
       true ->
         :ok
     end
@@ -1302,6 +1596,19 @@ defmodule Jido.Statechart.Session do
          Diagnostic.new(:missing_session_version, "stored session contract version is required",
            path: [:session, field]
          )}
+    end
+  end
+
+  defp required_stored_field(_attrs, _field, false), do: :ok
+
+  defp required_stored_field(attrs, field, true) do
+    if Map.has_key?(attrs, field) or Map.has_key?(attrs, Atom.to_string(field)) do
+      :ok
+    else
+      {:error,
+       Diagnostic.new(:missing_stored_field, "Stored session field is required",
+         path: [:session, field]
+       )}
     end
   end
 

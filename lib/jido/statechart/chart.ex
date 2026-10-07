@@ -4,7 +4,7 @@ defmodule Jido.Statechart.Chart do
   alias Jido.Statechart.{Diagnostic, Limits, Registry, Session}
   alias Jido.Statechart.Model.Chart, as: ModelChart
 
-  @caller_fields [:operation, :session, :event, :limits]
+  @caller_fields [:operation, :session, :event, :limits, :now]
   @protected_fields [:chart, "chart", :registry, "registry", :context, "context"]
   @use_option_keys [:chart, :registry]
 
@@ -118,7 +118,8 @@ defmodule Jido.Statechart.Chart do
          session: Diagnostic.fetch(params, :session),
          event: Diagnostic.fetch(params, :event),
          registry: registry,
-         limits: limits
+         limits: limits,
+         now: Diagnostic.fetch(params, :now)
        }}
     else
       {:error, _diagnostic} = error -> error
@@ -135,6 +136,12 @@ defmodule Jido.Statechart.Chart do
       params =
         case Keyword.fetch(options, :limits) do
           {:ok, limits} -> Map.put(params, :limits, limits)
+          :error -> params
+        end
+
+      params =
+        case Keyword.fetch(options, :now) do
+          {:ok, now} -> Map.put(params, :now, now)
           :error -> params
         end
 

@@ -9,8 +9,8 @@ defmodule Jido.Statechart.Flow do
   alias Jido.Statechart.Model.{Chart, Event}
 
   @exec_option_keys [:timeout, :max_concurrency, :max_continuations, :task_supervisor]
-  @runtime_option_keys [:limits, :context | @exec_option_keys]
-  @input_option_keys [:operation, :limits]
+  @runtime_option_keys [:limits, :now, :context | @exec_option_keys]
+  @input_option_keys [:operation, :limits, :now]
 
   @flow Jido.Flow.new!(
           name: "jido_statechart_macrostep",
@@ -73,6 +73,7 @@ defmodule Jido.Statechart.Flow do
     validate_input_options!(options)
     operation = Keyword.get(options, :operation, inferred_operation(session, event))
     limits = Keyword.get(options, :limits, Limits.default())
+    now = Keyword.get(options, :now)
 
     %{
       operation: operation,
@@ -80,7 +81,8 @@ defmodule Jido.Statechart.Flow do
       session: session,
       event: event,
       registry: registry,
-      limits: limits
+      limits: limits,
+      now: now
     }
   end
 
@@ -88,7 +90,9 @@ defmodule Jido.Statechart.Flow do
   @spec initialize(Chart.t(), Session.t(), Registry.t(), keyword()) :: Jido.Exec.exec_result()
   def initialize(%Chart{} = chart, %Session{} = session, %Registry{} = registry, options \\ []) do
     with :ok <- validate_options(options) do
-      input_options = options |> Keyword.take([:limits]) |> Keyword.put(:operation, :initialize)
+      input_options =
+        options |> Keyword.take([:limits, :now]) |> Keyword.put(:operation, :initialize)
+
       execute(__MODULE__, input(chart, session, nil, registry, input_options), options)
     end
   end
@@ -98,7 +102,25 @@ defmodule Jido.Statechart.Flow do
           Jido.Exec.exec_result()
   def step(%Chart{} = chart, %Session{} = session, event, %Registry{} = registry, options \\ []) do
     with :ok <- validate_options(options) do
-      input_options = options |> Keyword.take([:limits]) |> Keyword.put(:operation, :run)
+      input_options = options |> Keyword.take([:limits, :now]) |> Keyword.put(:operation, :run)
+      execute(__MODULE__, input(chart, session, event, registry, input_options), options)
+    end
+  end
+
+  @doc false
+  @spec platform_step(Chart.t(), Session.t(), Event.t() | map(), Registry.t(), keyword()) ::
+          Jido.Exec.exec_result()
+  def platform_step(
+        %Chart{} = chart,
+        %Session{} = session,
+        event,
+        %Registry{} = registry,
+        options \\ []
+      ) do
+    with :ok <- validate_options(options) do
+      input_options =
+        options |> Keyword.take([:limits, :now]) |> Keyword.put(:operation, :platform)
+
       execute(__MODULE__, input(chart, session, event, registry, input_options), options)
     end
   end

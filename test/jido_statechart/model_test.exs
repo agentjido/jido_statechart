@@ -263,14 +263,17 @@ defmodule Jido.Statechart.ModelTest do
   end
 
   test "sessions and results round-trip without runtime handles" do
+    correlation = %{}
+
     operation =
       Operation.new!(%{
         session_incarnation: "incarnation-1",
         kind: :send,
         target: "parent",
-        payload_digest: String.duplicate("c", 64),
+        payload_digest: Diagnostic.digest(correlation),
         generation: 1,
-        created_revision: 1
+        created_revision: 1,
+        correlation: correlation
       })
 
     session =

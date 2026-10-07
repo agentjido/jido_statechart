@@ -186,6 +186,20 @@ defmodule Jido.Statechart.ExecutableContent do
             "data" => payload
           }
 
+          intent =
+            case get_in(state.system, ["_event", "turn_id"]) do
+              turn_id when is_binary(turn_id) and turn_id != "" ->
+                Map.put(intent, "turn_id", turn_id)
+
+              _other ->
+                intent
+            end
+
+          intent =
+            if is_nil(data["targetexpr"]),
+              do: intent,
+              else: Map.put(intent, "target_selected", true)
+
           append_intent(assigned, intent, context.limits)
         end
       else

@@ -6,7 +6,12 @@ defmodule Jido.Statechart.FlowTest do
   alias Jido.Statechart.Actions.{Finish, Prepare}
   alias Jido.Statechart.Model.Event
   alias Jido.Statechart.Semantics.Macrostep
-  alias Jido.Statechart.{Diagnostic, Flow, Limits, Result, SemanticFixture, Session}
+  alias Jido.Statechart.{Diagnostic, Flow, Limits, Registry, Result, SemanticFixture, Session}
+
+  defmodule ParentAdapter do
+    def idempotency, do: :operation_id
+    def deliver(_signal, _operation_id, _context), do: :ok
+  end
 
   test "the canonical graph is static, acyclic, and ordered" do
     assert [
@@ -147,8 +152,12 @@ defmodule Jido.Statechart.FlowTest do
       </state>
       """)
 
-    session = SemanticFixture.session(chart, status: :active, configuration: ["a"])
-    input = Flow.input(chart, session, %{name: "go"}, SemanticFixture.registry())
+    registry = parent_registry()
+
+    session =
+      SemanticFixture.session(chart, status: :active, configuration: ["a"], registry: registry)
+
+    input = Flow.input(chart, session, %{name: "go"}, registry)
 
     assert {:ok, %Result{} = result} = Exec.run(Flow, input)
     assert [%Jido.Statechart.Session.Operation{kind: :send, target: "parent"}] = result.intents
@@ -168,8 +177,10 @@ defmodule Jido.Statechart.FlowTest do
       </state>
       """)
 
-    registry = SemanticFixture.registry()
-    initial = SemanticFixture.session(chart, status: :active, configuration: ["a"])
+    registry = parent_registry()
+
+    initial =
+      SemanticFixture.session(chart, status: :active, configuration: ["a"], registry: registry)
 
     assert {:ok, %Result{} = first} = Flow.step(chart, initial, %{name: "go"}, registry)
     assert Enum.map(first.intents, & &1.generation) == [0]
@@ -206,6 +217,21 @@ defmodule Jido.Statechart.FlowTest do
     assert Enum.map(same_macrostep.intents, & &1.generation) == [0, 1]
     assert same_macrostep.session.operation_counter == 2
     assert 2 == same_macrostep.intents |> Enum.map(& &1.id) |> Enum.uniq() |> length()
+  end
+
+  defp parent_registry do
+    Registry.new!(%{
+      version: "flow-parent-1",
+      entries: [
+        %{
+          kind: :target,
+          alias: "parent",
+          permissions: ["delivery:at_least_once", "idempotency:operation_id", "send:event"],
+          metadata: %{"allowed_signal_types" => ["outside"], "scope" => "local_agent"},
+          handler: ParentAdapter
+        }
+      ]
+    })
   end
 
   test "Flow Action boundaries reject malformed and protected input" do

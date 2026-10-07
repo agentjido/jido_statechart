@@ -8,7 +8,6 @@ defmodule Jido.Statechart.ContractValidationTest do
 
   @digest_a String.duplicate("a", 64)
   @digest_b String.duplicate("b", 64)
-  @digest_c String.duplicate("c", 64)
 
   defmodule TestAction do
     use Jido.Action, name: "contract_validation_action"
@@ -23,7 +22,7 @@ defmodule Jido.Statechart.ContractValidationTest do
 
     changed = [
       %{attrs | session_incarnation: "incarnation-2"},
-      %{attrs | kind: :timer},
+      %{attrs | kind: :send, due_at: nil},
       %{attrs | target: "child"},
       %{attrs | payload_digest: String.duplicate("d", 64)},
       %{attrs | due_at: "2026-10-06T12:00:01Z"},
@@ -48,6 +47,43 @@ defmodule Jido.Statechart.ContractValidationTest do
              |> Operation.dump()
              |> Map.delete("identity_version")
              |> Operation.load()
+  end
+
+  test "operation payload digest binds canonical correlation and timer shape" do
+    attrs = operation_attrs() |> Map.put(:correlation, %{"event" => "notice"})
+
+    assert {:error, %Diagnostic{code: :operation_payload_digest_mismatch}} =
+             Operation.new(attrs)
+
+    correlation = %{"event" => "notice"}
+    digest = Diagnostic.digest(correlation)
+
+    assert {:error, %Diagnostic{code: :invalid_operation_due_at}} =
+             Operation.new(%{
+               attrs
+               | payload_digest: digest,
+                 correlation: correlation,
+                 kind: :timer,
+                 due_at: nil
+             })
+
+    assert {:error, %Diagnostic{code: :invalid_operation_due_at}} =
+             Operation.new(%{
+               attrs
+               | payload_digest: digest,
+                 correlation: correlation,
+                 kind: :send,
+                 due_at: "2026-10-06T12:00:00Z"
+             })
+
+    assert {:error, %Diagnostic{code: :invalid_operation_timestamp}} =
+             Operation.new(%{
+               attrs
+               | payload_digest: digest,
+                 correlation: correlation,
+                 kind: :timer,
+                 due_at: "not-a-time"
+             })
   end
 
   test "operation state combinations are explicit and restorable" do
@@ -121,8 +157,8 @@ defmodule Jido.Statechart.ContractValidationTest do
     end
 
     unsupported = [
-      {"schema_version", 2},
-      {"runtime_protocol_version", 2},
+      {"schema_version", 1},
+      {"runtime_protocol_version", 1},
       {"profile_version", "other-profile"},
       {"data_model_version", "2"},
       {"limits_version", "2"}
@@ -750,16 +786,19 @@ defmodule Jido.Statechart.ContractValidationTest do
   end
 
   defp operation_attrs(overrides \\ %{}) do
+    correlation = Map.get(overrides, :correlation, %{"kind" => "timer"})
+
     Map.merge(
       %{
         session_incarnation: "incarnation-1",
-        kind: :send,
+        kind: :timer,
         target: "parent",
-        payload_digest: @digest_c,
+        payload_digest: Diagnostic.digest(correlation),
         due_at: "2026-10-06T12:00:00Z",
         generation: 1,
         created_revision: 1,
-        retention_class: :active
+        retention_class: :active,
+        correlation: correlation
       },
       overrides
     )

@@ -7,7 +7,7 @@ defmodule Jido.Statechart.Actions.Prepare do
   alias Jido.Statechart.Model.{Chart, Event}
   alias Jido.Statechart.Semantics.Macrostep
 
-  @fields [:operation, :chart, :session, :event, :registry, :limits]
+  @fields [:operation, :chart, :session, :event, :registry, :limits, :now]
   @protected_context [:chart, "chart", :registry, "registry", :statechart, "statechart"]
 
   @impl true
@@ -20,10 +20,12 @@ defmodule Jido.Statechart.Actions.Prepare do
          %Limits{} = limits <- Diagnostic.fetch(params, :limits, Limits.default()),
          event = Diagnostic.fetch(params, :event),
          {:ok, operation} <- operation(Diagnostic.fetch(params, :operation), session, event),
-         options = execution_options(registry, limits, context) do
+         {:ok, now} <- runtime_now(Diagnostic.fetch(params, :now)),
+         options = execution_options(registry, limits, now, context) do
       case operation do
         :initialize -> Macrostep.prepare_initialize(chart, session, options)
         :run -> Macrostep.prepare_run(chart, session, event, options)
+        :platform -> Macrostep.prepare_platform(chart, session, event, options)
       end
     else
       nil -> {:error, Diagnostic.new(:invalid_flow_input, "Statechart Flow input is incomplete")}
@@ -61,6 +63,10 @@ defmodule Jido.Statechart.Actions.Prepare do
     do: {:ok, :initialize}
 
   defp parse_operation(value, _session, _event) when value in [:run, "run"], do: {:ok, :run}
+
+  defp parse_operation(value, _session, _event) when value in [:platform, "platform"],
+    do: {:ok, :platform}
+
   defp parse_operation(nil, %Session{status: :new}, nil), do: {:ok, :initialize}
   defp parse_operation(nil, _session, nil), do: invalid_operation_input("event input is required")
   defp parse_operation(nil, _session, _event), do: {:ok, :run}
@@ -87,11 +93,28 @@ defmodule Jido.Statechart.Actions.Prepare do
   defp validate_operation_input(:run, _session, _event),
     do: invalid_operation_input("run requires an active session")
 
+  defp validate_operation_input(:platform, %Session{status: :active}, event)
+       when not is_nil(event) do
+    with {:ok, %{class: :platform}} <- Event.new(event), do: :ok
+  end
+
+  defp validate_operation_input(:platform, _session, _event),
+    do: invalid_operation_input("platform run requires an active session and platform event")
+
   defp invalid_operation_input(message),
     do: {:error, Diagnostic.new(:invalid_flow_input, message, path: [:flow, :input])}
 
-  defp execution_options(registry, limits, context) do
-    [registry: registry, limits: limits, deadline: deadline(context)]
+  defp execution_options(registry, limits, now, context) do
+    [registry: registry, limits: limits, now: now, deadline: deadline(context)]
+  end
+
+  defp runtime_now(nil), do: {:ok, DateTime.utc_now() |> DateTime.to_iso8601()}
+
+  defp runtime_now(value) do
+    case Jido.Statechart.Runtime.Timer.datetime(value) do
+      {:ok, datetime} -> {:ok, DateTime.to_iso8601(datetime)}
+      {:error, _diagnostic} = error -> error
+    end
   end
 
   defp deadline(context) do

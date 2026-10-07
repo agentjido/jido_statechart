@@ -13,7 +13,7 @@ defmodule Jido.Statechart.Plugin.Commit do
           session: Session.t(),
           expected_revision: non_neg_integer() | nil,
           signal_id: String.t(),
-          operation: :initialize | :run | :cleanup,
+          operation: :initialize | :run | :cleanup | :schedule | :cancel | :runtime_result,
           intents: [Operation.t()]
         }
 
@@ -27,7 +27,15 @@ defmodule Jido.Statechart.Plugin.Commit do
          true <-
            is_binary(directive.signal_id) and directive.signal_id != "" and
              String.valid?(directive.signal_id),
-         true <- directive.operation in [:initialize, :run, :cleanup] do
+         true <-
+           directive.operation in [
+             :initialize,
+             :run,
+             :cleanup,
+             :schedule,
+             :cancel,
+             :runtime_result
+           ] do
       {:ok, %{directive | session: session, intents: intents}}
     else
       _other -> {:error, :invalid_statechart_commit}

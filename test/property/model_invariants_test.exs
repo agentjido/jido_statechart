@@ -180,14 +180,17 @@ defmodule Jido.Statechart.ModelInvariantsTest do
   end
 
   defp operation_fixture(overrides \\ %{}) do
+    correlation = Map.get(overrides, :correlation, %{})
+
     attrs = %{
       session_incarnation: "incarnation-1",
       kind: :send,
       target: "parent",
-      payload_digest: String.duplicate("c", 64),
+      payload_digest: Diagnostic.digest(correlation),
       generation: 1,
       created_revision: 1,
-      retention_class: :active
+      retention_class: :active,
+      correlation: correlation
     }
 
     Operation.new!(Map.merge(attrs, overrides))

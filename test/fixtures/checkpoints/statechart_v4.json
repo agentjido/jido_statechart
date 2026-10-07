@@ -1,6 +1,6 @@
 {
   "chart_fingerprint": "c33ab2f15a777fcca2ebccd8e3fa1fcb4a732996b49a94026097263b02e486e8",
-  "checkpoint_version": 3,
+  "checkpoint_version": 4,
   "data_model_version": "1",
   "duplicate_window": 2,
   "limits": {
@@ -35,7 +35,7 @@
     "entries": [],
     "version": "registry-1"
   },
-  "runtime_protocol_version": 1,
+  "runtime_protocol_version": 2,
   "session": {
     "chart_fingerprint": "c33ab2f15a777fcca2ebccd8e3fa1fcb4a732996b49a94026097263b02e486e8",
     "completion_data": {"result": "ok"},
@@ -51,6 +51,7 @@
     "limits_digest": "4c46ace12ff041579f70587b23e4e768710a92c69c37e96ed3df59ccaa6d3a4d",
     "limits_version": "1",
     "operation_counter": 3,
+    "operation_high_water": {},
     "operation_tombstones": {
       "op_v1_48e4fa9ad5c49dde75231b38d03fb17fbd3a2e117a92ee82ab0a8c2912107fe8": {
         "due_at": null,
@@ -87,12 +88,13 @@
       }
     },
     "profile_version": "jido-scxml-1.0/profile-1",
+    "received_operation_ids": [],
     "registry_digest": "14a8fac28fad4d04ac7306eaa7fb3982aa3376d05dd759c8b1029c9699a0611c",
     "registry_version": "registry-1",
     "revision": 4,
     "revision_fence": 4,
-    "runtime_protocol_version": 1,
-    "schema_version": 1,
+    "runtime_protocol_version": 2,
+    "schema_version": 2,
     "status": "completed",
     "trace": []
   }

@@ -5,7 +5,16 @@ defmodule Jido.Statechart.AgentSessionTest do
   alias Jido.AgentServer
   alias Jido.Statechart.Agent.Extension
   alias Jido.Statechart.Plugin.Runtime
-  alias Jido.Statechart.{Agent, Chart, Flow, Plugin, Result, SemanticFixture}
+  alias Jido.Statechart.{Agent, Chart, Flow, Plugin, Registry, Result, SemanticFixture}
+
+  defmodule ParentAdapter do
+    def idempotency, do: :operation_id
+
+    def deliver(_signal, _operation_id, _context) do
+      Process.sleep(500)
+      :ok
+    end
+  end
 
   defmodule BoundChart do
     @chart SemanticFixture.chart("""
@@ -17,7 +26,25 @@ defmodule Jido.Statechart.AgentSessionTest do
            </state>
            <final id="done"/>
            """)
-    @registry SemanticFixture.registry()
+    @registry Registry.new!(%{
+                version: "agent-parent-1",
+                entries: [
+                  %{
+                    kind: :target,
+                    alias: "parent",
+                    permissions: [
+                      "delivery:at_least_once",
+                      "idempotency:operation_id",
+                      "send:event"
+                    ],
+                    metadata: %{
+                      "allowed_signal_types" => ["notice"],
+                      "scope" => "local_agent"
+                    },
+                    handler: Jido.Statechart.AgentSessionTest.ParentAdapter
+                  }
+                ]
+              })
     use Chart, chart: @chart, registry: @registry
   end
 
@@ -246,7 +273,11 @@ defmodule Jido.Statechart.AgentSessionTest do
   test "cleanup rescan retries the same request after a best-effort cast is dropped" do
     session =
       BoundChart.chart()
-      |> SemanticFixture.session(status: :completed, configuration: ["done"])
+      |> SemanticFixture.session(
+        status: :completed,
+        configuration: ["done"],
+        registry: BoundChart.registry()
+      )
       |> then(&%{&1 | revision: 2, revision_fence: 2})
 
     server =
@@ -286,7 +317,11 @@ defmodule Jido.Statechart.AgentSessionTest do
 
     session =
       BoundChart.chart()
-      |> SemanticFixture.session(status: :completed, configuration: ["done"])
+      |> SemanticFixture.session(
+        status: :completed,
+        configuration: ["done"],
+        registry: BoundChart.registry()
+      )
       |> then(&%{&1 | revision: 2, revision_fence: 2})
 
     saved =

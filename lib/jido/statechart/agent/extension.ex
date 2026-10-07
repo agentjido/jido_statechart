@@ -149,6 +149,8 @@ defmodule Jido.Statechart.Agent.Extension do
         cond do
           type == Agent.initialization_signal_type() -> Route
           type == Agent.cleanup_signal_type() -> Route.Cleanup
+          type == Agent.reconciliation_signal_type() -> Jido.Statechart.Plugin.Schedule
+          type == Agent.delivery_signal_type() -> Jido.Statechart.Plugin.RuntimeResult
           true -> Route.Reserved
         end
 

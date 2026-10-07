@@ -71,21 +71,41 @@ defmodule Jido.Statechart.Semantics.Macrostep do
           {:ok, flow_state()} | {:error, Diagnostic.t()}
   def prepare_run(%Chart{} = chart, %Session{} = session, event, options)
       when is_list(options) do
+    prepare_event(chart, session, event, options, :external)
+  end
+
+  def prepare_run(_chart, _session, _event, _options) do
+    {:error, Diagnostic.new(:invalid_semantic_input, "macrostep input is invalid")}
+  end
+
+  @doc false
+  @spec prepare_platform(Chart.t(), Session.t(), Event.t() | map(), keyword()) ::
+          {:ok, flow_state()} | {:error, Diagnostic.t()}
+  def prepare_platform(%Chart{} = chart, %Session{} = session, event, options)
+      when is_list(options) do
+    prepare_event(chart, session, event, options, :platform)
+  end
+
+  def prepare_platform(_chart, _session, _event, _options) do
+    {:error, Diagnostic.new(:invalid_semantic_input, "platform macrostep input is invalid")}
+  end
+
+  defp prepare_event(chart, session, event, options, event_class) do
     with {:ok, context} <- context(chart, session, options),
          :ok <- validate_session_boundary(chart, session, context.options),
          :ok <- runnable_session(session),
          :ok <- Configuration.validate(chart, session.configuration),
-         {:ok, event} <- normalize_event(event, :external),
+         {:ok, event} <- normalize_event(event, event_class),
+         true <- event.class == event_class,
          :ok <- validate_event_boundary(event, context.options),
          {:ok, workspace} <- workspace(chart, session, context.options),
          {:ok, workspace, pending, complete?} <-
            plan_event(chart, workspace, event, context.options) do
       {:ok, flow_state(chart, session, workspace, context.options, pending, complete?)}
+    else
+      false -> {:error, Diagnostic.new(:invalid_event_class, "macrostep event class is invalid")}
+      {:error, _diagnostic} = error -> error
     end
-  end
-
-  def prepare_run(_chart, _session, _event, _options) do
-    {:error, Diagnostic.new(:invalid_semantic_input, "macrostep input is invalid")}
   end
 
   @doc "Executes exactly one planned SCXML semantic microstep."

@@ -19,6 +19,8 @@ defmodule Jido.Statechart.Plugin do
   @state_format_version 1
   @default_duplicate_window 1_024
   @default_rescan_interval 1_000
+  @default_retry_limit 3
+  @default_retry_backoff_ms 100
   @allowed_state_keys [:format_version, :session, :recent_signal_ids]
   @immutable_session_fields [
     :schema_version,
@@ -39,6 +41,7 @@ defmodule Jido.Statechart.Plugin do
     :session_incarnation,
     :kind,
     :target,
+    :key,
     :payload_digest,
     :due_at,
     :generation,
@@ -85,11 +88,17 @@ defmodule Jido.Statechart.Plugin do
 
   @impl Jido.Plugin
   def admit(runtime, %Admission{signal: signal} = admission, _opts) do
-    if Agent.reserved_signal?(signal.type) do
-      with :ok <- Runtime.verify(runtime, admission),
-           do: {:ok, %{authenticated_reserved: true}}
-    else
-      {:ok, %{}}
+    cond do
+      Agent.reserved_signal?(signal.type) ->
+        with :ok <- Runtime.verify(runtime, admission),
+             do: {:ok, %{authenticated_reserved: true}}
+
+      runtime_delivery?(signal) ->
+        with :ok <- Runtime.verify(runtime, admission),
+             do: {:ok, %{authenticated_delivery: true}}
+
+      true ->
+        {:ok, %{}}
     end
   end
 
@@ -243,6 +252,12 @@ defmodule Jido.Statechart.Plugin do
            signal_id: signal.id
          }}
 
+      signal.type == Agent.reconciliation_signal_type() and match?(%Session{}, session) ->
+        prepare_reconciliation(signal, session)
+
+      signal.type == Agent.delivery_signal_type() and match?(%Session{}, session) ->
+        prepare_runtime_result(signal, session, config)
+
       Agent.reserved_signal?(signal.type) ->
         {:ok, %{kind: :reserved_rejection, reason: :unsupported_statechart_runtime_signal}}
 
@@ -253,6 +268,37 @@ defmodule Jido.Statechart.Plugin do
         {:error, :statechart_session_not_initialized}
 
       session.status == :active ->
+        prepare_macrostep(signal, session, config)
+
+      session.status in [:completed, :cleaning, :stopped] ->
+        {:error, :statechart_session_completed}
+
+      true ->
+        {:error, :invalid_statechart_session_status}
+    end
+  end
+
+  defp prepare_macrostep(signal, session, config) do
+    case self_delivery_operation(signal, session) do
+      %Session.Operation{id: operation_id} ->
+        if operation_id in session.received_operation_ids do
+          {:error, {:duplicate_signal, operation_id}}
+        else
+          {:ok,
+           %{
+             kind: :macrostep,
+             operation: :run,
+             chart: config.chart,
+             session: session,
+             event: event(signal, session),
+             limits: config.limits,
+             expected_revision: session.revision,
+             signal_id: signal.id,
+             receipt_operation_id: operation_id
+           }}
+        end
+
+      nil ->
         {:ok,
          %{
            kind: :macrostep,
@@ -264,14 +310,24 @@ defmodule Jido.Statechart.Plugin do
            expected_revision: session.revision,
            signal_id: signal.id
          }}
-
-      session.status in [:completed, :cleaning, :stopped] ->
-        {:error, :statechart_session_completed}
-
-      true ->
-        {:error, :invalid_statechart_session_status}
     end
   end
+
+  defp self_delivery_operation(signal, session) do
+    operation_id = Jido.Signal.get_context(signal, "jidoscop")
+
+    case Map.get(session.operations, operation_id) do
+      %Session.Operation{state: :result_unknown, kind: kind, target: target} = operation
+      when kind in [:send, :timer] and target in ["self", "#_self"] ->
+        operation
+
+      _other ->
+        nil
+    end
+  end
+
+  defp runtime_delivery?(signal),
+    do: not is_nil(Jido.Signal.get_context(signal, "jidoscop"))
 
   defp new_session(agent_id, signal_id, config) do
     versions = Session.contract_versions()
@@ -289,6 +345,104 @@ defmodule Jido.Statechart.Plugin do
     )
   end
 
+  defp prepare_reconciliation(signal, session) do
+    data = signal.data
+    operation_id = value(data, "operation_id")
+    generation = value(data, "generation")
+    action = value(data, "action")
+    target_id = value(data, "target_operation_id")
+
+    with %Session.Operation{generation: ^generation} <-
+           Map.get(session.operations, operation_id) do
+      case action do
+        "schedule" ->
+          {:ok,
+           %{
+             kind: :runtime_schedule,
+             operation: :schedule,
+             session: session,
+             operation_id: operation_id,
+             generation: generation,
+             expected_revision: session.revision,
+             signal_id: signal.id
+           }}
+
+        action
+        when action in [
+               "cancel",
+               "cancel_replaced",
+               "cancel_stale",
+               "confirm_cancel",
+               "complete_cancel"
+             ] ->
+          {:ok,
+           %{
+             kind: :runtime_cancel,
+             operation: :cancel,
+             session: session,
+             operation_id: operation_id,
+             generation: generation,
+             target_operation_id: target_id || operation_id,
+             reason: action,
+             expected_revision: session.revision,
+             signal_id: signal.id
+           }}
+
+        _other ->
+          {:ok, %{kind: :reserved_rejection, reason: :invalid_runtime_reconciliation}}
+      end
+    else
+      _other -> {:ok, %{kind: :reserved_rejection, reason: :unknown_runtime_operation}}
+    end
+  end
+
+  defp prepare_runtime_result(signal, session, config) do
+    data = signal.data
+    operation_id = value(data, "operation_id")
+    generation = value(data, "generation")
+
+    with %Session.Operation{generation: ^generation} <-
+           Map.get(session.operations, operation_id),
+         {:ok, result_state} <- runtime_result_state(value(data, "state")) do
+      {:ok,
+       %{
+         kind: :runtime_result,
+         operation: :runtime_result,
+         session: session,
+         operation_id: operation_id,
+         generation: generation,
+         result_state: result_state,
+         result: value(data, "result"),
+         chart: config.chart,
+         limits: config.limits,
+         expected_revision: session.revision,
+         signal_id: signal.id
+       }}
+    else
+      _other -> {:ok, %{kind: :reserved_rejection, reason: :invalid_runtime_result}}
+    end
+  end
+
+  defp runtime_result_state(value)
+       when value in [
+              :confirmed_complete,
+              :result_unknown,
+              :retryable_failure,
+              :permanent_failure,
+              "confirmed_complete",
+              "result_unknown",
+              "retryable_failure",
+              "permanent_failure"
+            ] do
+    {:ok, if(is_atom(value), do: value, else: String.to_existing_atom(value))}
+  end
+
+  defp runtime_result_state(_value), do: {:error, :invalid_runtime_result_state}
+
+  defp value(map, key) when is_map(map), do: Map.get(map, key)
+
+  defp value(_map, _key), do: nil
+
   defp reduce_commits(%Reduction{plugin_state: state}, [], _config), do: {:ok, state}
 
   defp reduce_commits(_reduction, [_first, _second | _rest], _config),
@@ -301,6 +455,10 @@ defmodule Jido.Statechart.Plugin do
          :ok <- preserve_session_fences(state.session, reduction.prepared_input, commit.session),
          :ok <- preserve_ledger(state.session, commit.session),
          {:ok, commit} <- store_intents(state.session, commit),
+         collected_session <-
+           Session.collect_terminal(commit.session, config.limits.terminal_records),
+         :ok <- valid_terminal_collection(commit.session, collected_session),
+         commit = %{commit | session: collected_session},
          :ok <- compare_and_swap(state.session, commit),
          :ok <- Session.validate_contract(commit.session, config.chart.registry(), config.limits),
          :ok <- Session.validate_limits(commit.session, config.limits),
@@ -354,10 +512,20 @@ defmodule Jido.Statechart.Plugin do
     do: operation in [:initialize, :run]
 
   defp valid_prepared_kind?(%{kind: :cleanup}, :cleanup), do: true
+  defp valid_prepared_kind?(%{kind: :runtime_schedule}, :schedule), do: true
+  defp valid_prepared_kind?(%{kind: :runtime_cancel}, :cancel), do: true
+  defp valid_prepared_kind?(%{kind: :runtime_result}, :runtime_result), do: true
   defp valid_prepared_kind?(_prepared, _operation), do: false
 
   defp valid_signal_operation?(type, :initialize), do: type == Agent.initialization_signal_type()
   defp valid_signal_operation?(type, :cleanup), do: type == Agent.cleanup_signal_type()
+
+  defp valid_signal_operation?(type, operation) when operation in [:schedule, :cancel],
+    do: type == Agent.reconciliation_signal_type()
+
+  defp valid_signal_operation?(type, :runtime_result),
+    do: type == Agent.delivery_signal_type()
+
   defp valid_signal_operation?(type, :run), do: not Agent.reserved_signal?(type)
 
   defp valid_status_transition?(nil, %Session{status: status}, :initialize),
@@ -367,10 +535,34 @@ defmodule Jido.Statechart.Plugin do
     do: status in [:active, :completed]
 
   defp valid_status_transition?(
+         %Session{status: :active},
+         %Session{status: status},
+         :runtime_result
+       ),
+       do: status in [:active, :completed]
+
+  defp valid_status_transition?(
          %Session{status: :completed},
          %Session{status: :stopped},
          :cleanup
        ),
+       do: true
+
+  defp valid_status_transition?(
+         %Session{status: status},
+         %Session{status: status},
+         operation
+       )
+       when status in [:active, :completed, :cleaning] and
+              operation in [:schedule, :cancel],
+       do: true
+
+  defp valid_status_transition?(
+         %Session{status: status},
+         %Session{status: status},
+         :runtime_result
+       )
+       when status in [:completed, :cleaning],
        do: true
 
   defp valid_status_transition?(_current, _next, _operation), do: false
@@ -404,6 +596,12 @@ defmodule Jido.Statechart.Plugin do
       next.generated_id_counter < source.generated_id_counter ->
         {:error, :statechart_generated_id_counter_regression}
 
+      generation_high_water_regressed?(source.operation_high_water, next.operation_high_water) ->
+        {:error, :statechart_operation_high_water_regression}
+
+      receipt_regressed?(source, next) ->
+        {:error, :statechart_receiver_receipt_regression}
+
       not MapSet.subset?(
         MapSet.new(source.initialized_data_state_ids),
         MapSet.new(next.initialized_data_state_ids)
@@ -426,6 +624,25 @@ defmodule Jido.Statechart.Plugin do
          :ok <- preserve_operations(current.operations, next.operations) do
       :ok
     end
+  end
+
+  defp generation_high_water_regressed?(current, next) do
+    Enum.any?(current, fn {key, generation} -> Map.get(next, key, -1) < generation end)
+  end
+
+  defp receipt_regressed?(current, next) do
+    removed =
+      MapSet.difference(
+        MapSet.new(current.received_operation_ids),
+        MapSet.new(next.received_operation_ids)
+      )
+
+    Enum.any?(removed, fn id ->
+      case Map.get(next.operations, id) do
+        %Session.Operation{} = operation -> not Session.Operation.terminal?(operation)
+        _other -> true
+      end
+    end)
   end
 
   defp preserve_tombstones(current, next) do
@@ -479,7 +696,9 @@ defmodule Jido.Statechart.Plugin do
          %{result_revision: next, state: next_state, result: next_result}
        ) do
     is_integer(next) and
-      (next > current or (next == current and state == next_state and result == next_result))
+      (next > current or
+         (next == current and result == next_result and not is_nil(next_state) and
+            not is_nil(state)))
   end
 
   defp legal_operation_state?(current, next) do
@@ -492,7 +711,7 @@ defmodule Jido.Statechart.Plugin do
         true
 
       next.state == :canceled ->
-        current.state == :cancel_requested
+        current.state in [:not_started, :result_unknown, :retryable_failure, :cancel_requested]
 
       true ->
         current.state in [:not_started, :result_unknown, :retryable_failure, :cancel_requested]
@@ -523,8 +742,22 @@ defmodule Jido.Statechart.Plugin do
         {:error, :invalid_statechart_operation_intent}
 
       true ->
+        high_water =
+          Enum.reduce(intents, session.operation_high_water, fn intent, acc ->
+            if is_binary(intent.key) do
+              Map.update(acc, intent.key, intent.generation, &max(&1, intent.generation))
+            else
+              acc
+            end
+          end)
+
         with {:ok, operations} <- merge_intents(session.operations, intents),
-             {:ok, session} <- Session.new(%{session | operations: operations}) do
+             {:ok, session} <-
+               Session.new(%{
+                 session
+                 | operations: operations,
+                   operation_high_water: high_water
+               }) do
           {:ok, %{commit | session: session}}
         end
     end
@@ -538,6 +771,39 @@ defmodule Jido.Statechart.Plugin do
         {:cont, {:ok, Map.put(acc, intent.id, intent)}}
       end
     end)
+  end
+
+  defp valid_terminal_collection(source, collected) do
+    active =
+      Map.reject(source.operations, fn {_id, operation} ->
+        Session.Operation.terminal?(operation)
+      end)
+
+    cond do
+      collected.operations != active ->
+        {:error, :invalid_statechart_terminal_collection}
+
+      generation_high_water_regressed?(
+        source.operation_high_water,
+        collected.operation_high_water
+      ) ->
+        {:error, :invalid_statechart_terminal_collection}
+
+      Enum.any?(collected.operation_tombstones, fn {id, tombstone} ->
+        case Map.get(source.operations, id) do
+          %Session.Operation{} = operation ->
+            not Session.Operation.terminal?(operation) or
+                Session.Tombstone.from_operation(operation) != tombstone
+
+          nil ->
+            Map.get(source.operation_tombstones, id) != tombstone
+        end
+      end) ->
+        {:error, :invalid_statechart_terminal_collection}
+
+      true ->
+        :ok
+    end
   end
 
   defp append_fifo(ids, id, maximum) do
@@ -559,12 +825,16 @@ defmodule Jido.Statechart.Plugin do
     duplicate_window = Keyword.get(opts, :duplicate_window, @default_duplicate_window)
     stop_on_done = Keyword.get(opts, :stop_on_done, false)
     rescan_interval = Keyword.get(opts, :rescan_interval, @default_rescan_interval)
+    retry_limit = Keyword.get(opts, :retry_limit, @default_retry_limit)
+    retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, @default_retry_backoff_ms)
     supplied_limits = Keyword.get(opts, :limits, Limits.default())
 
     with true <- chart_module?(chart),
          true <- is_integer(duplicate_window) and duplicate_window in 1..100_000,
          true <- is_boolean(stop_on_done),
          true <- is_integer(rescan_interval) and rescan_interval in 10..60_000,
+         true <- is_integer(retry_limit) and retry_limit in 1..100,
+         true <- is_integer(retry_backoff_ms) and retry_backoff_ms in 1..60_000,
          {:ok, limits} <-
            Limits.new(
              if(is_struct(supplied_limits),
@@ -578,6 +848,8 @@ defmodule Jido.Statechart.Plugin do
          duplicate_window: duplicate_window,
          stop_on_done: stop_on_done,
          rescan_interval: rescan_interval,
+         retry_limit: retry_limit,
+         retry_backoff_ms: retry_backoff_ms,
          limits: limits
        }}
     else

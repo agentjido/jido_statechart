@@ -1,11 +1,12 @@
 defmodule Jido.Statechart.PluginTest do
   use ExUnit.Case, async: true
 
-  alias Jido.Agent.Plugin.Reduction
+  alias Jido.Agent.Plugin.{Preparation, Reduction}
   alias Jido.Persistence.Plugin.Context
+  alias Jido.Plugin.Input
   alias Jido.Statechart.Plugin.Commit
   alias Jido.Statechart.Session.{Operation, Tombstone}
-  alias Jido.Statechart.{Chart, Diagnostic, Limits, Plugin, Profile, SemanticFixture}
+  alias Jido.Statechart.{Chart, Diagnostic, Limits, Plugin, Profile, Result, SemanticFixture}
 
   defmodule BoundChart do
     @chart SemanticFixture.chart("""
@@ -63,6 +64,70 @@ defmodule Jido.Statechart.PluginTest do
 
     assert {:error, {:statechart_revision_jump, 0, 2}} =
              Plugin.reduce(reduction(plugin_state, [invalid_next]), @options)
+  end
+
+  test "self delivery records one durable operation receipt and rejects its replay" do
+    correlation = %{
+      "kind" => "send",
+      "event" => "go",
+      "data" => %{},
+      "target" => "#_self"
+    }
+
+    operation =
+      Operation.new!(%{
+        session_incarnation: "incarnation-1",
+        kind: :send,
+        target: "#_self",
+        key: "send:self-work",
+        payload_digest: Diagnostic.digest(correlation),
+        generation: 0,
+        state: :result_unknown,
+        attempt_count: 1,
+        correlation: correlation
+      })
+
+    current =
+      SemanticFixture.session(BoundChart.chart(), status: :active, configuration: ["idle"])
+      |> Map.merge(%{
+        operation_counter: 1,
+        operation_high_water: %{"send:self-work" => 0},
+        operations: %{operation.id => operation}
+      })
+
+    next = %{current | revision: 1, revision_fence: 1}
+    result = Result.new!(%{session: next})
+
+    prepared = %{
+      kind: :macrostep,
+      operation: :run,
+      expected_revision: 0,
+      signal_id: operation.id,
+      receipt_operation_id: operation.id
+    }
+
+    input = %Input{prepared: prepared, runtime: %{authenticated_delivery: true}}
+    context = %{agent_state: %{}, plugin_inputs: %{Plugin => input}}
+
+    assert {:ok, %{}, [receipt_commit]} =
+             Jido.Statechart.Plugin.Agent.run(%{result: result}, context)
+
+    assert receipt_commit.session.received_operation_ids == [operation.id]
+
+    signal = Jido.Signal.new!("go", %{}, id: operation.id, source: "/jido/statechart/session")
+    {:ok, signal} = Jido.Signal.put_context(signal, "jidoscop", operation.id)
+
+    preparation = %Preparation{
+      plugin: Plugin,
+      agent_id: "agent-1",
+      agent_module: __MODULE__,
+      agent_state: %{},
+      signal: signal,
+      plugin_state: Plugin.state(receipt_commit.session)
+    }
+
+    assert {:error, {:duplicate_signal, operation_id}} = Plugin.prepare(preparation, @options)
+    assert operation_id == operation.id
   end
 
   test "reduction binds immutable session identity and preserves the durable ledger" do
@@ -182,7 +247,10 @@ defmodule Jido.Statechart.PluginTest do
                @options
              )
 
-    assert resolved_state.session.operations[resolved.id] == resolved
+    assert resolved_state.session.operations == %{}
+
+    assert resolved_state.session.operation_tombstones[resolved.id] ==
+             Tombstone.from_operation(resolved)
   end
 
   test "reduction enforces committed session byte and operation pressure limits" do
@@ -257,12 +325,15 @@ defmodule Jido.Statechart.PluginTest do
 
     terminal_next = %{terminal_current | revision: 1, revision_fence: 1}
 
-    assert {:error, %Diagnostic{code: :terminal_record_limit_exceeded}} =
+    assert {:ok, terminal_state} =
              Plugin.reduce(
                reduction(Plugin.state(terminal_current), [commit(terminal_next, 0, "terminal")]),
                chart: BoundChart,
                limits: terminal_limits
              )
+
+    assert terminal_state.session.operations == %{}
+    assert terminal_state.session.operation_tombstones == %{}
   end
 
   test "reduction rejects a second Commit and invalid Commit data" do
@@ -400,11 +471,11 @@ defmodule Jido.Statechart.PluginTest do
     assert {:ok, current} = Plugin.migrate(fixture, @options)
     assert current["checkpoint_version"] == Plugin.checkpoint_version()
     assert {:ok, ^current} = Plugin.migrate(current, @options)
-    assert current["session"] == fixture["session"]
+    refute current["session"] == fixture["session"]
     assert current["recent_signal_ids"] == fixture["signal_ids"]
 
     assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
-    assert_frozen_session(state, fixture["session"], :active)
+    assert_frozen_session(state, current["session"], :active)
 
     assert {:error, {:unsupported_checkpoint_version, 0}} =
              Plugin.migrate(%{"checkpoint_version" => 0}, @options)
@@ -424,17 +495,36 @@ defmodule Jido.Statechart.PluginTest do
     assert {:ok, migrated} = Plugin.migrate(fixture, @options)
     assert migrated["checkpoint_version"] == Plugin.checkpoint_version()
     assert migrated["duplicate_window"] == 2
-    assert migrated["session"] == fixture["session"]
+    refute migrated["session"] == fixture["session"]
     assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
-    assert_frozen_session(state, fixture["session"], :completed)
+    assert_frozen_session(state, migrated["session"], :completed)
+  end
+
+  test "the frozen version-three checkpoint uses its declared migration" do
+    fixture = checkpoint_fixture(3)
+
+    assert {:ok, migrated} = Plugin.migrate(fixture, @options)
+    assert migrated["checkpoint_version"] == Plugin.checkpoint_version()
+    assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
+    assert_frozen_session(state, migrated["session"], :completed)
   end
 
   test "the frozen current checkpoint loads without migration changes" do
-    fixture = checkpoint_fixture(3)
+    fixture = checkpoint_fixture(4)
 
     assert {:ok, ^fixture} = Plugin.migrate(fixture, @options)
     assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
     assert_frozen_session(state, fixture["session"], :completed)
+  end
+
+  test "current and legacy checkpoints explicitly preserve an empty session" do
+    current = checkpoint_fixture(4) |> Map.put("session", nil)
+    legacy = checkpoint_fixture(3) |> Map.put("session", nil)
+
+    assert {:ok, %{session: nil}} = Plugin.load(current, context(:load), @options)
+    assert {:ok, migrated} = Plugin.migrate(legacy, @options)
+    assert migrated["checkpoint_version"] == Plugin.checkpoint_version()
+    assert migrated["session"] == nil
   end
 
   test "state validation rejects runtime handles and proof material" do
@@ -622,14 +712,18 @@ defmodule Jido.Statechart.PluginTest do
   end
 
   defp operation(kind, state, opts) do
+    correlation = Keyword.get(opts, :correlation, %{"kind" => Atom.to_string(kind)})
+
     defaults = [
       session_incarnation: "incarnation-1",
       kind: kind,
       target: "target",
-      payload_digest: Diagnostic.digest(%{"kind" => kind}),
+      payload_digest: Diagnostic.digest(correlation),
+      due_at: if(kind == :timer, do: "2026-10-06T12:00:00Z", else: nil),
       generation: 0,
       state: state,
-      created_revision: 0
+      created_revision: 0,
+      correlation: correlation
     ]
 
     defaults

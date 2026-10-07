@@ -10,8 +10,10 @@ defmodule Jido.Statechart.Plugin.Agent do
   def run(%{result: %Result{} = result}, context) do
     with %Input{prepared: prepared} <- get_in(context, [:plugin_inputs, Plugin]),
          %{kind: :macrostep, expected_revision: expected, signal_id: signal_id} <- prepared do
+      session = add_receipt(result.session, Map.get(prepared, :receipt_operation_id))
+
       commit = %Commit{
-        session: result.session,
+        session: session,
         expected_revision: expected,
         signal_id: signal_id,
         operation: prepared.operation,
@@ -25,4 +27,15 @@ defmodule Jido.Statechart.Plugin.Agent do
   end
 
   def run(_params, _context), do: {:error, :invalid_statechart_result}
+
+  defp add_receipt(session, nil), do: session
+
+  defp add_receipt(session, operation_id) do
+    receipts =
+      session.received_operation_ids
+      |> Kernel.++([operation_id])
+      |> Enum.uniq()
+
+    %{session | received_operation_ids: receipts}
+  end
 end
