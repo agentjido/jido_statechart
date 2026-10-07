@@ -46,12 +46,12 @@ defmodule Jido.Statechart.Agent.Extension do
   defp lower_routes(value),
     do: Authoring.error("Statechart Agent routes must be a list", %{routes: value})
 
-  defp lower_route(%{target: {%RouteTarget{} = target, defaults}} = route) do
+  defp lower_route(%{target: {%RouteTarget{extension: __MODULE__} = target, defaults}} = route) do
     with {:ok, chart} <- owned_chart(target),
          do: {:ok, %{route | target: {Route, defaults}}, chart}
   end
 
-  defp lower_route(%{target: %RouteTarget{} = target} = route) do
+  defp lower_route(%{target: %RouteTarget{extension: __MODULE__} = target} = route) do
     with {:ok, chart} <- owned_chart(target), do: {:ok, %{route | target: Route}, chart}
   end
 

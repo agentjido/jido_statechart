@@ -49,6 +49,17 @@ defmodule Jido.Statechart.AgentTest do
     use Chart, chart: @chart, registry: @registry
   end
 
+  defmodule OtherExtension do
+    @behaviour Jido.Agent.Extension
+    use Spark.Dsl.Extension
+
+    @impl Jido.Agent.Extension
+    def route_target_options, do: [:other]
+
+    @impl Jido.Agent.Extension
+    def lower_agent(config, entities), do: {:ok, config, entities}
+  end
+
   test "the Agent extension lowers a chart route to the normal Flow wrapper" do
     definition = LiveAgent.definition()
 
@@ -66,6 +77,28 @@ defmodule Jido.Statechart.AgentTest do
     assert %Jido.Flow.Compiled{} = Route.compiled()
     assert {:error, _error} = Route.validate_params(:invalid)
     assert {:error, _error} = Route.validate_output(%Result{})
+  end
+
+  test "the Agent extension keeps a route target owned by another extension" do
+    statechart = statechart_route("go", BoundChart)
+
+    other_target = %RouteTarget{
+      extension: OtherExtension,
+      option: :other,
+      value: :unchanged
+    }
+
+    other_route = %SignalRoute{
+      path: "other",
+      target: other_target,
+      priority: 0,
+      match: nil
+    }
+
+    config = %{routes: [statechart, other_route], plugins: [], metadata: %{}}
+
+    assert {:ok, lowered, []} = Extension.lower_agent(config, [])
+    assert Enum.any?(lowered.routes, &(&1.path == "other" and &1.target == other_target))
   end
 
   test "the Agent extension rejects missing, invalid, conflicting, and multiple chart bindings" do
