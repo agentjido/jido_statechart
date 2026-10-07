@@ -11,7 +11,7 @@ defmodule Jido.Statechart.Agent.Extension do
 
   alias Jido.Agent.Authoring
   alias Jido.Agent.Extension.RouteTarget
-  alias Jido.Statechart.Agent
+  alias Jido.Statechart.{Agent, Chart}
   alias Jido.Statechart.Agent.Route
   alias Jido.Statechart.Plugin
 
@@ -58,7 +58,7 @@ defmodule Jido.Statechart.Agent.Extension do
   defp lower_route(route), do: {:ok, route, nil}
 
   defp owned_chart(%RouteTarget{extension: __MODULE__, option: :statechart, value: chart}) do
-    if chart_module?(chart) do
+    if Chart.module?(chart) do
       {:ok, chart}
     else
       Authoring.error("Statechart Agent route requires a compiled chart module", %{chart: chart})
@@ -172,11 +172,4 @@ defmodule Jido.Statechart.Agent.Extension do
   defp fallback(routes) do
     if Enum.any?(routes, &(&1.path == "**")), do: {:ok, nil}, else: Authoring.route("**", Route)
   end
-
-  defp chart_module?(module) when is_atom(module) and not is_nil(module) do
-    Code.ensure_loaded?(module) and function_exported?(module, :chart, 0) and
-      function_exported?(module, :registry, 0)
-  end
-
-  defp chart_module?(_module), do: false
 end

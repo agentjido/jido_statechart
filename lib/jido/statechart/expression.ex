@@ -58,7 +58,7 @@ defmodule Jido.Statechart.Expression do
       when is_binary(identifier) and is_map(environment) and is_list(options) do
     if Keyword.keyword?(options) do
       with {:ok, registry} <- registry(options),
-           {:ok, limits} <- limits(options),
+           {:ok, limits} <- DataModel.limits(options),
            {:ok, entry} <- registered(registry, identifier),
            :ok <- permission(entry, "evaluate"),
            {:ok, expression} <- expression_value(entry),
@@ -83,10 +83,6 @@ defmodule Jido.Statechart.Expression do
       %Registry{} = registry -> {:ok, registry}
       _other -> {:error, Diagnostic.new(:invalid_registry, "A trusted Registry is required")}
     end
-  end
-
-  defp limits(options) do
-    DataModel.limits(options)
   end
 
   defp registered(registry, identifier) do

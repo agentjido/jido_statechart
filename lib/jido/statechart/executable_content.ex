@@ -25,7 +25,7 @@ defmodule Jido.Statechart.ExecutableContent do
     if Keyword.keyword?(options) do
       with {:ok, model} <- data_model(options),
            {:ok, registry} <- registry(options),
-           {:ok, limits} <- limits(options) do
+           {:ok, limits} <- DataModel.limits(options) do
         case validate_commands(commands, model) do
           :ok ->
             with {:ok, state} <- prepare_state(state, model, limits) do
@@ -806,10 +806,6 @@ defmodule Jido.Statechart.ExecutableContent do
       %Registry{} = registry -> {:ok, registry}
       _other -> {:error, Diagnostic.new(:invalid_registry, "A trusted Registry is required")}
     end
-  end
-
-  defp limits(options) do
-    DataModel.limits(options)
   end
 
   defp prepare_state(state, model, limits) do

@@ -15,7 +15,7 @@ defmodule Jido.Statechart.Plugin do
   alias Jido.Statechart.Model.Event
   alias Jido.Statechart.Plugin.{ChildControlAck, Commit, OwnedChildControl, Persistence, Runtime}
   alias Jido.Statechart.Runtime.Invocation
-  alias Jido.Statechart.{Diagnostic, Limits, Session}
+  alias Jido.Statechart.{Chart, Diagnostic, Limits, Session}
 
   @state_format_version 1
   @default_duplicate_window 1_024
@@ -974,7 +974,7 @@ defmodule Jido.Statechart.Plugin do
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, @default_retry_backoff_ms)
     supplied_limits = Keyword.get(opts, :limits, Limits.default())
 
-    with true <- chart_module?(chart),
+    with true <- Chart.module?(chart),
          true <- is_integer(duplicate_window) and duplicate_window in 1..100_000,
          true <- is_boolean(stop_on_done),
          true <- is_integer(rescan_interval) and rescan_interval in 10..60_000,
@@ -1001,11 +1001,4 @@ defmodule Jido.Statechart.Plugin do
       _other -> {:error, :invalid_statechart_plugin_options}
     end
   end
-
-  defp chart_module?(module) when is_atom(module) and not is_nil(module) do
-    Code.ensure_loaded?(module) and function_exported?(module, :chart, 0) and
-      function_exported?(module, :registry, 0)
-  end
-
-  defp chart_module?(_module), do: false
 end

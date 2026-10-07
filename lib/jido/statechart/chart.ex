@@ -149,6 +149,15 @@ defmodule Jido.Statechart.Chart do
     end
   end
 
+  @doc false
+  @spec module?(term()) :: boolean()
+  def module?(module) when is_atom(module) and not is_nil(module) do
+    Code.ensure_loaded?(module) and function_exported?(module, :chart, 0) and
+      function_exported?(module, :registry, 0)
+  end
+
+  def module?(_module), do: false
+
   defp reject_protected(params) do
     case Enum.find(@protected_fields, &Map.has_key?(params, &1)) do
       nil ->

@@ -14,7 +14,7 @@ defmodule Jido.Statechart.ActionRunner do
       when is_binary(identifier) and is_map(params) and is_map(environment) and is_list(options) do
     if Keyword.keyword?(options) do
       with {:ok, registry} <- registry(options),
-           {:ok, limits} <- limits(options),
+           {:ok, limits} <- DataModel.limits(options),
            {:ok, entry} <- registered(registry, identifier),
            :ok <- permission(entry),
            :ok <- DataModel.validate_value(params, [limits: limits], [:action, :params]),
@@ -39,10 +39,6 @@ defmodule Jido.Statechart.ActionRunner do
       %Registry{} = registry -> {:ok, registry}
       _other -> {:error, Diagnostic.new(:invalid_registry, "A trusted Registry is required")}
     end
-  end
-
-  defp limits(options) do
-    DataModel.limits(options)
   end
 
   defp registered(registry, identifier) do

@@ -2,7 +2,7 @@ defmodule Jido.Statechart.Plugin.Persistence do
   @moduledoc false
 
   alias Jido.Persistence.Plugin.Context
-  alias Jido.Statechart.{Limits, Plugin, Profile, Registry, Session}
+  alias Jido.Statechart.{Chart, Limits, Plugin, Profile, Registry, Session}
 
   @checkpoint_version 5
   @version_four 4
@@ -299,7 +299,7 @@ defmodule Jido.Statechart.Plugin.Persistence do
     supplied_limits = Keyword.get(opts, :limits, Limits.default())
     duplicate_window = Keyword.get(opts, :duplicate_window, 1_024)
 
-    with true <- chart_module?(chart_module),
+    with true <- Chart.module?(chart_module),
          true <- is_integer(duplicate_window) and duplicate_window in 1..100_000,
          {:ok, limits} <- limits(supplied_limits) do
       {:ok,
@@ -316,11 +316,4 @@ defmodule Jido.Statechart.Plugin.Persistence do
 
   defp limits(%Limits{} = limits), do: Limits.new(Map.from_struct(limits))
   defp limits(value), do: Limits.new(value)
-
-  defp chart_module?(module) when is_atom(module) and not is_nil(module) do
-    Code.ensure_loaded?(module) and function_exported?(module, :chart, 0) and
-      function_exported?(module, :registry, 0)
-  end
-
-  defp chart_module?(_module), do: false
 end
