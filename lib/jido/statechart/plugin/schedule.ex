@@ -37,7 +37,7 @@ defmodule Jido.Statechart.Plugin.Schedule do
            runtime: %{authenticated_reserved: true}
          } <- get_in(context, [:plugin_inputs, Plugin]),
          %{generation: ^generation} = operation <- Map.get(session.operations, operation_id),
-         true <- operation.state in [:not_started, :result_unknown, :retryable_failure],
+         true <- schedulable?(operation),
          true <- Timer.due?(operation.next_attempt_at || operation.due_at, DateTime.utc_now()),
          next_revision = session.revision + 1,
          updated = %{
@@ -67,4 +67,11 @@ defmodule Jido.Statechart.Plugin.Schedule do
       _other -> {:error, :invalid_statechart_runtime_schedule}
     end
   end
+
+  defp schedulable?(%{state: state}) when state in [:not_started, :retryable_failure], do: true
+
+  defp schedulable?(%{state: :result_unknown, next_attempt_at: next_attempt_at}),
+    do: not is_nil(next_attempt_at)
+
+  defp schedulable?(_operation), do: false
 end

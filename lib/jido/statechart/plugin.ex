@@ -22,6 +22,7 @@ defmodule Jido.Statechart.Plugin do
   @default_rescan_interval 1_000
   @default_retry_limit 3
   @default_retry_backoff_ms 100
+  @default_delivery_timeout_ms 30_000
   @allowed_state_keys [:format_version, :session, :recent_signal_ids]
   @immutable_session_fields [
     :schema_version,
@@ -972,6 +973,10 @@ defmodule Jido.Statechart.Plugin do
     rescan_interval = Keyword.get(opts, :rescan_interval, @default_rescan_interval)
     retry_limit = Keyword.get(opts, :retry_limit, @default_retry_limit)
     retry_backoff_ms = Keyword.get(opts, :retry_backoff_ms, @default_retry_backoff_ms)
+
+    delivery_timeout_ms =
+      Keyword.get(opts, :delivery_timeout_ms, @default_delivery_timeout_ms)
+
     supplied_limits = Keyword.get(opts, :limits, Limits.default())
 
     with true <- Chart.module?(chart),
@@ -980,6 +985,7 @@ defmodule Jido.Statechart.Plugin do
          true <- is_integer(rescan_interval) and rescan_interval in 10..60_000,
          true <- is_integer(retry_limit) and retry_limit in 1..100,
          true <- is_integer(retry_backoff_ms) and retry_backoff_ms in 1..60_000,
+         true <- is_integer(delivery_timeout_ms) and delivery_timeout_ms in 10..300_000,
          {:ok, limits} <-
            Limits.new(
              if(is_struct(supplied_limits),
@@ -995,6 +1001,7 @@ defmodule Jido.Statechart.Plugin do
          rescan_interval: rescan_interval,
          retry_limit: retry_limit,
          retry_backoff_ms: retry_backoff_ms,
+         delivery_timeout_ms: delivery_timeout_ms,
          limits: limits
        }}
     else

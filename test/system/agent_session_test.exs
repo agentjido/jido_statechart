@@ -3,9 +3,10 @@ defmodule Jido.Statechart.AgentSessionTest do
   import ExUnit.CaptureLog
 
   alias Jido.AgentServer
+  alias Jido.AgentServer.Plugin.Admission
   alias Jido.Statechart.Agent.Extension
   alias Jido.Statechart.Plugin.Runtime
-  alias Jido.Statechart.{Agent, Chart, Flow, Plugin, Registry, Result, SemanticFixture}
+  alias Jido.Statechart.{Agent, Chart, Flow, Limits, Plugin, Registry, Result, SemanticFixture}
 
   defmodule ParentAdapter do
     def idempotency, do: :operation_id
@@ -140,6 +141,10 @@ defmodule Jido.Statechart.AgentSessionTest do
       {:reply, {:ok, state.plugin_state}, state}
     end
 
+    def handle_call(:status, _from, state) do
+      {:reply, %{runtime: %{parent: nil}}, state}
+    end
+
     @impl true
     def handle_cast({:signal, _token, signal}, state) do
       attempt = state.attempts + 1
@@ -234,6 +239,43 @@ defmodule Jido.Statechart.AgentSessionTest do
     assert {:ok, dumped} = Plugin.dump(state, persistence_context(:dump), chart: BoundChart)
     refute inspect(state) =~ "jidoscproof"
     refute inspect(dumped) =~ "jidoscproof"
+  end
+
+  test "proof signing rejects data above the configured data byte limit" do
+    {server, runtime} = start_proof_runtime(Limits.new!(data_bytes: 0))
+
+    assert {:error, :invalid_runtime_proof} = Runtime.initialization_signal(server)
+    assert Process.alive?(runtime)
+  end
+
+  test "proof verification rejects data above the configured data byte limit" do
+    data = %{"payload" => :binary.copy("x", 100)}
+    data_bytes = :erlang.external_size(data, [:deterministic])
+    {_server, runtime} = start_proof_runtime(Limits.new!(data_bytes: data_bytes))
+
+    signal =
+      Jido.Signal.new!(Agent.initialization_signal_type(), data,
+        source: "/jido/statechart/runtime"
+      )
+
+    assert {:ok, signed} = GenServer.call(runtime, {:sign, signal, "initialize", 0})
+
+    :sys.replace_state(runtime, fn state ->
+      put_in(state, [:options, :limits], Limits.new!(data_bytes: data_bytes - 1))
+    end)
+
+    admission = %Admission{
+      plugin: Plugin,
+      agent_id: "proof-agent",
+      agent_module: LiveAgent,
+      signal: signed,
+      caller_context: %{},
+      plugin_state: Plugin.state(nil),
+      prepared_input: %{},
+      state_version: 0
+    }
+
+    assert {:error, :invalid_runtime_proof} = Runtime.verify(runtime, admission)
   end
 
   test "stop_on_done waits for a later authenticated cleanup Turn", %{jido: jido} do
@@ -387,6 +429,33 @@ defmodule Jido.Statechart.AgentSessionTest do
       direction: direction,
       reason: :test
     }
+  end
+
+  defp start_proof_runtime(limits) do
+    server =
+      start_supervised!(
+        {DropServer, observer: self(), plugin_state: Plugin.state(nil)},
+        id: {:proof_server, System.unique_integer([:positive])}
+      )
+
+    init = %Jido.Plugin.Init{
+      agent_server: server,
+      agent_id: "proof-agent",
+      module: Plugin,
+      plugin_state: Plugin.state(nil),
+      state_version: 0,
+      jido: nil,
+      partition: nil,
+      options: [chart: BoundChart, limits: limits]
+    }
+
+    runtime =
+      start_supervised!(
+        {Runtime, init},
+        id: {:proof_runtime, System.unique_integer([:positive])}
+      )
+
+    {server, runtime}
   end
 
   defp eventually(predicate, attempts \\ 100)

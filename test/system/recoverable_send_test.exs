@@ -235,6 +235,41 @@ defmodule Jido.Statechart.RecoverableSendTest do
     end
   end
 
+  defmodule TimeoutBlockingChart do
+    @chart SemanticFixture.chart("""
+           <state id="root">
+             <transition event="emit">
+               <send event="notice" target="agent:blocking" id="first"/>
+               <send event="notice" target="agent:blocking" id="second"/>
+             </transition>
+           </state>
+           """)
+
+    @registry BlockingChart.registry()
+    use Chart, chart: @chart, registry: @registry
+  end
+
+  defmodule TimeoutBlockingAgent do
+    use Jido.Agent,
+      name: "statechart_timeout_blocking_agent",
+      extensions: [Extension]
+
+    agent do
+      plugin(Plugin,
+        config: [
+          rescan_interval: 10,
+          retry_backoff_ms: 1_000,
+          delivery_timeout_ms: 50,
+          limits: [runtime_concurrency: 1]
+        ]
+      )
+    end
+
+    routes do
+      route("emit", statechart: TimeoutBlockingChart)
+    end
+  end
+
   setup do
     jido = String.to_atom("recoverable_send_jido_#{System.unique_integer([:positive])}")
     namespace = "statechart/recoverable/#{System.unique_integer([:positive])}"
@@ -264,6 +299,37 @@ defmodule Jido.Statechart.RecoverableSendTest do
     assert_receive {:delivery_started, replacement_task, ^operation_id}, 2_000
     assert replacement_task != task
     send(replacement_task, :release)
+  end
+
+  test "a delivery timeout frees its concurrency slot for later work", %{jido: jido} do
+    :persistent_term.put({BlockingAdapter, :observer}, self())
+    on_exit(fn -> :persistent_term.erase({BlockingAdapter, :observer}) end)
+
+    {:ok, server} = Jido.start_agent(jido, TimeoutBlockingAgent, id: "delivery-timeout")
+    assert {:ok, _agent} = Agent.initialize(server)
+    assert {:ok, committed} = call(server, "emit", "emit-timeout")
+    assert map_size(committed.state.statechart.session.operations) == 2
+
+    assert_receive {:delivery_started, first_task, first_operation_id}, 2_000
+    first_monitor = Process.monitor(first_task)
+
+    assert_receive {:DOWN, ^first_monitor, :process, ^first_task, _reason}, 2_000
+
+    assert_receive {:delivery_started, second_task, second_operation_id}, 2_000
+    assert second_operation_id != first_operation_id
+
+    assert :ok =
+             eventually(fn ->
+               operation = Map.fetch!(records(session(server)), first_operation_id)
+
+               operation.state == :result_unknown and
+                 operation.attempt_count == 1 and
+                 is_binary(operation.next_attempt_at) and
+                 operation.result["operation_id"] == first_operation_id and
+                 operation.result["reason"] == "timeout"
+             end)
+
+    send(second_task, :release)
   end
 
   test "commits an immediate self-send before delivery and records its later result", %{

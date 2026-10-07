@@ -27,6 +27,11 @@ defmodule Jido.Statechart.Runtime.Server do
     kind, _reason -> classify({:error, {:uncertain, kind}}, operation, options)
   end
 
+  @doc false
+  @spec delivery_timeout(Operation.t(), keyword()) :: {:result_unknown, map()}
+  def delivery_timeout(%Operation{} = operation, options),
+    do: unknown(operation, :timeout, options)
+
   defp classify(:ok, operation, _options) do
     {:confirmed_complete,
      %{

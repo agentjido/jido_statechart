@@ -50,6 +50,12 @@ The runtime first commits an attempt state. It then dispatches the work. A
 confirmed result, retryable failure, permanent failure, or unknown result is
 committed by a later Turn.
 
+Each delivery attempt has a bounded `delivery_timeout_ms`. The default is
+30,000 milliseconds, and the allowed range is 10 through 300,000 milliseconds.
+On timeout, the runtime stops its owned task, frees the runtime concurrency
+slot, and records a result-unknown outcome with the normal retry backoff. The
+retry keeps the same immutable operation ID.
+
 ## Unknown outcomes and reconciliation
 
 A timeout, process exit, adapter exception, or ambiguous error can leave the
@@ -159,7 +165,8 @@ not assume that no child exists.
 `Jido.Statechart.Limits` bounds pending work by type, retained terminal records,
 session bytes, timer horizon, invocation depth, total descendants,
 reconciliation batch size, runtime concurrency, and runtime-generated Turns.
-The Plugin also bounds retries and the reconciliation interval.
+The Plugin also bounds retries, delivery attempt time, and the reconciliation
+interval.
 
 Use `Jido.Statechart.inspect_session/1` for safe stable state. It reports active
 configuration, history, completion state, trace size, and pending operation IDs.

@@ -21,6 +21,17 @@ defmodule Jido.Statechart.PluginTest do
 
   @options [chart: BoundChart, duplicate_window: 2]
 
+  test "validates the delivery attempt timeout option" do
+    assert :ok = Plugin.validate_options(chart: BoundChart, delivery_timeout_ms: 10)
+    assert :ok = Plugin.validate_options(chart: BoundChart, delivery_timeout_ms: 300_000)
+
+    assert {:error, :invalid_statechart_plugin_options} =
+             Plugin.validate_options(chart: BoundChart, delivery_timeout_ms: 9)
+
+    assert {:error, :invalid_statechart_plugin_options} =
+             Plugin.validate_options(chart: BoundChart, delivery_timeout_ms: 300_001)
+  end
+
   test "Commit is the only owner of session writes and validates compare-and-swap" do
     current =
       SemanticFixture.session(BoundChart.chart(), status: :active, configuration: ["idle"])

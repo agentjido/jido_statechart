@@ -119,6 +119,12 @@ failure or unknown result is stored and reported by a later correlated Turn. It
 does not roll back the macrostep. A retry keeps the same operation ID. Each
 external target must use that ID for durable idempotency.
 
+Delivery attempts time out after 30,000 milliseconds by default. Set
+`delivery_timeout_ms` from 10 through 300,000 milliseconds to change this
+limit. A timeout stops the owned delivery task, frees its concurrency slot, and
+records an unknown result with the configured retry backoff and the same
+operation ID.
+
 ## Safety and lifecycle rules
 
 - XML, Signal data, and stored state cannot select modules or create atoms.

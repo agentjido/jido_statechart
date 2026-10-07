@@ -3,7 +3,7 @@ defmodule Jido.Statechart.Runtime.ReconciliationTest do
 
   alias Jido.Plugin.Input
   alias Jido.Statechart.Plugin
-  alias Jido.Statechart.Plugin.{Cancel, RuntimeResult}
+  alias Jido.Statechart.Plugin.{Cancel, RuntimeResult, Schedule}
   alias Jido.Statechart.Runtime.{Intent, Reconciler}
   alias Jido.Statechart.Session.Operation
   alias Jido.Statechart.Model.Event
@@ -126,6 +126,37 @@ defmodule Jido.Statechart.Runtime.ReconciliationTest do
     session = %{session | operations: %{failed.id => failed}, revision: 2, revision_fence: 2}
     assert [] = Reconciler.plan(session, ~U[2026-10-06 12:00:01Z], limits)
     assert [{:schedule, ^failed}] = Reconciler.plan(session, ~U[2026-10-06 12:00:02Z], limits)
+  end
+
+  test "a stale schedule control cannot increment an in-flight attempt" do
+    {session, _registry, _limits} = fixture()
+    operation = operation(session, 0, :not_started)
+    session = put_operation(session, operation)
+    context = schedule_context(session, operation, "schedule-once")
+
+    assert {:ok, %{kept: true}, [commit]} = Schedule.run(%{}, context)
+
+    scheduled = commit.session.operations[operation.id]
+    assert scheduled.state == :result_unknown
+    assert scheduled.attempt_count == 1
+    assert scheduled.next_attempt_at == nil
+
+    stale_context = schedule_context(commit.session, scheduled, "schedule-stale")
+
+    assert {:error, _reason} = Schedule.run(%{}, stale_context)
+    assert commit.session.operations[operation.id].attempt_count == 1
+
+    retryable = %{
+      scheduled
+      | next_attempt_at: DateTime.utc_now() |> DateTime.add(-1, :second) |> DateTime.to_iso8601()
+    }
+
+    retry_session = %{commit.session | operations: %{retryable.id => retryable}}
+
+    assert {:ok, %{kept: true}, [retry_commit]} =
+             Schedule.run(%{}, schedule_context(retry_session, retryable, "schedule-retry"))
+
+    assert retry_commit.session.operations[operation.id].attempt_count == 2
   end
 
   test "replacement and explicit cancellation fence old timer generations" do
@@ -416,6 +447,21 @@ defmodule Jido.Statechart.Runtime.ReconciliationTest do
     }
 
     %{agent_state: %{}, plugin_inputs: %{Plugin => input}}
+  end
+
+  defp schedule_context(session, operation, signal_id) do
+    input = %Input{
+      prepared: %{
+        kind: :runtime_schedule,
+        session: session,
+        operation_id: operation.id,
+        generation: operation.generation,
+        signal_id: signal_id
+      },
+      runtime: %{authenticated_reserved: true}
+    }
+
+    %{agent_state: %{kept: true}, plugin_inputs: %{Plugin => input}}
   end
 
   defp put_operation(session, operation) do

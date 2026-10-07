@@ -14,6 +14,7 @@ defmodule Jido.Statechart.Plugin.Runtime do
   @generation "jidoscgen"
   @payload_digest "jidoscdigest"
   @default_rescan_interval 1_000
+  @default_delivery_timeout_ms 30_000
 
   def start_link(%Init{} = init) do
     GenServer.start_link(__MODULE__, init, name: runtime_name(init.agent_server))
@@ -241,7 +242,7 @@ defmodule Jido.Statechart.Plugin.Runtime do
   end
 
   def handle_info(
-        {:delivery_result, epoch, task_pid, operation, result_state, result},
+        {:delivery_result, epoch, token, task_pid, operation, result_state, result},
         state
       ) do
     projection = Map.get(state.attempts, operation.id)
@@ -250,12 +251,14 @@ defmodule Jido.Statechart.Plugin.Runtime do
          %{
            status: :running,
            epoch: ^epoch,
+           token: ^token,
            pid: ^task_pid,
            attempt_count: attempt_count
          }
          when attempt_count == operation.attempt_count,
          projection
        ) and epoch == state.epoch do
+      cancel_attempt_timeout(projection)
       Process.demonitor(projection.monitor, [:flush])
       state = %{state | attempts: Map.delete(state.attempts, operation.id)}
       finish_delivery_result(state, operation, result_state, result)
@@ -264,14 +267,43 @@ defmodule Jido.Statechart.Plugin.Runtime do
     end
   end
 
-  def handle_info({:DOWN, monitor, :process, _pid, _reason}, state) do
-    attempts =
-      Map.reject(state.attempts, fn {_id, projection} ->
-        projection.status == :running and Map.get(projection, :monitor) == monitor
-      end)
+  def handle_info({:delivery_timeout, epoch, token, task_pid, operation}, state) do
+    projection = Map.get(state.attempts, operation.id)
 
-    state = %{state | attempts: attempts}
-    {:noreply, wake_rescan(state)}
+    if match?(
+         %{
+           status: :running,
+           epoch: ^epoch,
+           token: ^token,
+           pid: ^task_pid,
+           generation: generation,
+           attempt_count: attempt_count
+         }
+         when generation == operation.generation and
+                attempt_count == operation.attempt_count,
+         projection
+       ) and epoch == state.epoch do
+      state = stop_owned_attempt(state, operation.id)
+      {result_state, result} = Server.delivery_timeout(operation, dispatch_options(state))
+      finish_delivery_result(state, operation, result_state, result)
+    else
+      {:noreply, state}
+    end
+  end
+
+  def handle_info({:DOWN, monitor, :process, pid, _reason}, state) do
+    case Enum.find(state.attempts, fn {_id, projection} ->
+           projection.status == :running and Map.get(projection, :monitor) == monitor and
+             Map.get(projection, :pid) == pid
+         end) do
+      {operation_id, projection} ->
+        cancel_attempt_timeout(projection)
+        state = %{state | attempts: Map.delete(state.attempts, operation_id)}
+        {:noreply, wake_rescan(state)}
+
+      nil ->
+        {:noreply, state}
+    end
   end
 
   def handle_info({:EXIT, pid, reason}, %{attempts_supervisor: pid} = state),
@@ -614,13 +646,27 @@ defmodule Jido.Statechart.Plugin.Runtime do
   end
 
   defp cast_child_control(state, session, operation, data, kind) do
+    cast_control_once(state, session, operation, data, kind)
+  end
+
+  defp cast_control(state, session, operation, data, kind) do
+    cast_control_once(state, session, operation, data, kind)
+  end
+
+  defp cast_control_once(state, session, operation, data, kind) do
     now = System.monotonic_time(:millisecond)
     retry_after = max(state.options.rescan_interval * 100, 5_000)
     requested_action = data["action"]
 
     case Map.get(state.controls, operation.id) do
-      %{generation: generation, action: action, sent_at: sent_at}
+      %{
+        generation: generation,
+        action: action,
+        attempt_count: attempt_count,
+        sent_at: sent_at
+      }
       when generation == operation.generation and action == requested_action and
+             attempt_count == operation.attempt_count and
              now - sent_at < retry_after ->
         state
 
@@ -630,6 +676,7 @@ defmodule Jido.Statechart.Plugin.Runtime do
             control = %{
               generation: operation.generation,
               action: requested_action,
+              attempt_count: operation.attempt_count,
               sent_at: now
             }
 
@@ -639,11 +686,6 @@ defmodule Jido.Statechart.Plugin.Runtime do
             state
         end
     end
-  end
-
-  defp cast_control(state, session, operation, data, kind) do
-    {_status, state} = cast_control_result(state, session, operation, data, kind)
-    state
   end
 
   defp cast_control_result(state, session, operation, data, kind) do
@@ -672,13 +714,10 @@ defmodule Jido.Statechart.Plugin.Runtime do
   defp start_dispatch(state, session, operation) do
     runtime = self()
     epoch = state.epoch
+    token = make_ref()
     registry = state.options.chart.registry()
     context = runtime_context(state, session, operation)
-
-    options = [
-      retry_limit: state.options.retry_limit,
-      retry_backoff_ms: state.options.retry_backoff_ms
-    ]
+    options = dispatch_options(state)
 
     {:ok, pid} =
       Task.Supervisor.start_child(
@@ -689,12 +728,19 @@ defmodule Jido.Statechart.Plugin.Runtime do
 
           send(
             runtime,
-            {:delivery_result, epoch, task_pid, operation, result_state, result}
+            {:delivery_result, epoch, token, task_pid, operation, result_state, result}
           )
         end
       )
 
     monitor = Process.monitor(pid)
+
+    timeout_ref =
+      Process.send_after(
+        self(),
+        {:delivery_timeout, epoch, token, pid, operation},
+        state.options.delivery_timeout_ms
+      )
 
     attempts =
       Map.put(state.attempts, operation.id, %{
@@ -703,7 +749,9 @@ defmodule Jido.Statechart.Plugin.Runtime do
         generation: operation.generation,
         monitor: monitor,
         pid: pid,
-        status: :running
+        status: :running,
+        timeout_ref: timeout_ref,
+        token: token
       })
 
     %{state | attempts: attempts}
@@ -1035,6 +1083,7 @@ defmodule Jido.Statechart.Plugin.Runtime do
   defp stop_owned_attempt(state, operation_id) do
     case Map.get(state.attempts, operation_id) do
       %{status: :running, pid: pid, monitor: monitor, epoch: epoch} when epoch == state.epoch ->
+        cancel_attempt_timeout(Map.fetch!(state.attempts, operation_id))
         _result = Task.Supervisor.terminate_child(state.attempts_supervisor, pid)
         Process.demonitor(monitor, [:flush])
         %{state | attempts: Map.delete(state.attempts, operation_id)}
@@ -1042,6 +1091,20 @@ defmodule Jido.Statechart.Plugin.Runtime do
       _other ->
         %{state | attempts: Map.delete(state.attempts, operation_id)}
     end
+  end
+
+  defp cancel_attempt_timeout(%{timeout_ref: timeout_ref}) when is_reference(timeout_ref) do
+    Process.cancel_timer(timeout_ref)
+    :ok
+  end
+
+  defp cancel_attempt_timeout(_projection), do: :ok
+
+  defp dispatch_options(state) do
+    [
+      retry_limit: state.options.retry_limit,
+      retry_backoff_ms: state.options.retry_backoff_ms
+    ]
   end
 
   defp stop_all_owned_attempts(state) do
@@ -1106,9 +1169,9 @@ defmodule Jido.Statechart.Plugin.Runtime do
   defp sign(signal, operation, generation, state, incarnation \\ nil)
 
   defp sign(%Jido.Signal{} = signal, operation, generation, state, supplied_incarnation) do
-    payload_digest = Diagnostic.digest(signal.data)
-
-    with {:ok, incarnation} <- signing_incarnation(signal, state.agent_id, supplied_incarnation),
+    with true <- proof_data_within_limit?(signal.data, state),
+         payload_digest <- Diagnostic.digest(signal.data),
+         {:ok, incarnation} <- signing_incarnation(signal, state.agent_id, supplied_incarnation),
          proof <- proof(state, incarnation, operation, generation, signal, payload_digest),
          {:ok, signal} <- Jido.Signal.put_context(signal, @epoch, state.epoch),
          {:ok, signal} <- Jido.Signal.put_context(signal, @operation, operation),
@@ -1116,6 +1179,8 @@ defmodule Jido.Statechart.Plugin.Runtime do
          {:ok, signal} <- Jido.Signal.put_context(signal, @payload_digest, payload_digest),
          {:ok, signal} <- Jido.Signal.put_context(signal, @proof, proof) do
       {:ok, signal}
+    else
+      _other -> {:error, :invalid_runtime_proof}
     end
   end
 
@@ -1131,9 +1196,10 @@ defmodule Jido.Statechart.Plugin.Runtime do
        when agent_id == state.agent_id do
     operation = Jido.Signal.get_context(signal, @operation)
     generation = Jido.Signal.get_context(signal, @generation)
-    payload_digest = Diagnostic.digest(signal.data)
 
-    with true <- Jido.Signal.get_context(signal, @epoch) == state.epoch,
+    with true <- proof_data_within_limit?(signal.data, state),
+         payload_digest <- Diagnostic.digest(signal.data),
+         true <- Jido.Signal.get_context(signal, @epoch) == state.epoch,
          true <- Jido.Signal.get_context(signal, @payload_digest) == payload_digest,
          true <- valid_reserved_coordinates(signal, operation, generation, plugin_state),
          {:ok, incarnation} <- incarnation(signal, agent_id, plugin_state),
@@ -1147,6 +1213,10 @@ defmodule Jido.Statechart.Plugin.Runtime do
   end
 
   defp verify_admission(_admission, _state), do: {:error, :invalid_runtime_proof}
+
+  defp proof_data_within_limit?(data, state) do
+    :erlang.external_size(data, [:deterministic]) <= state.options.limits.data_bytes
+  end
 
   defp valid_reserved_coordinates(signal, "initialize", 0, %{session: nil}),
     do: signal.type == Agent.initialization_signal_type()
@@ -1296,6 +1366,7 @@ defmodule Jido.Statechart.Plugin.Runtime do
       limits: limits,
       retry_limit: Keyword.get(opts, :retry_limit, 3),
       retry_backoff_ms: Keyword.get(opts, :retry_backoff_ms, 100),
+      delivery_timeout_ms: Keyword.get(opts, :delivery_timeout_ms, @default_delivery_timeout_ms),
       rescan_interval: interval,
       rescan_timeout: min(interval, 1_000)
     }
