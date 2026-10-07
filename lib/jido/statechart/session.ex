@@ -13,6 +13,7 @@ defmodule Jido.Statechart.Session do
   @runtime_protocol_version 1
   @data_model_version "1"
   @limits_version "1"
+  @generated_id_prefix "__jido_scxml_generated_"
   @statuses [:new, :active, :completed, :cleaning, :stopped]
   @version_fields [
     :schema_version,
@@ -32,6 +33,7 @@ defmodule Jido.Statechart.Session do
               :status,
               :revision,
               :revision_fence,
+              :generated_id_counter,
               :configuration,
               :history,
               :data,
@@ -583,6 +585,7 @@ defmodule Jido.Statechart.Session do
             status: :new,
             revision: 0,
             revision_fence: 0,
+            generated_id_counter: 0,
             configuration: [],
             history: %{},
             data: %{},
@@ -621,6 +624,8 @@ defmodule Jido.Statechart.Session do
          {:ok, status} <- status(Diagnostic.fetch(attrs, :status, :new)),
          {:ok, revision} <- nonnegative(attrs, :revision, 0),
          {:ok, revision_fence} <- nonnegative(attrs, :revision_fence, 0),
+         :ok <- required_counter(attrs, :generated_id_counter, strict?),
+         {:ok, generated_id_counter} <- nonnegative(attrs, :generated_id_counter, 0),
          {:ok, configuration} <- ids(Diagnostic.fetch(attrs, :configuration, []), :configuration),
          {:ok, history} <- history(Diagnostic.fetch(attrs, :history, %{})),
          {:ok, data} <- portable_map(Diagnostic.fetch(attrs, :data, %{}), :data),
@@ -646,6 +651,7 @@ defmodule Jido.Statechart.Session do
            status: status,
            revision: revision,
            revision_fence: revision_fence,
+           generated_id_counter: generated_id_counter,
            configuration: configuration,
            history: history,
            data: data,
@@ -662,9 +668,45 @@ defmodule Jido.Statechart.Session do
   @spec new!(map()) :: t()
   def new!(attrs), do: attrs |> new() |> Diagnostic.unwrap!()
 
+  @doc "Returns the reserved prefix for processor-generated SCXML identifiers."
+  @spec generated_id_prefix() :: String.t()
+  def generated_id_prefix, do: @generated_id_prefix
+
+  @doc "Builds one session-unique SCXML send ID, separate from transport operation IDs."
+  @spec generated_send_id(String.t(), String.t(), non_neg_integer()) ::
+          {:ok, String.t()} | {:error, Diagnostic.t()}
+  def generated_send_id(session_id, incarnation, counter) do
+    with :ok <- Diagnostic.validate_id(session_id, [:session, :id]),
+         :ok <- Diagnostic.validate_id(incarnation, [:session, :incarnation]),
+         true <- is_integer(counter) and counter >= 0 do
+      identity = %{
+        "kind" => "send",
+        "session_id" => session_id,
+        "incarnation" => incarnation
+      }
+
+      {:ok, "#{@generated_id_prefix}send_#{Diagnostic.digest(identity)}_#{counter}"}
+    else
+      false ->
+        {:error,
+         Diagnostic.new(:invalid_session_counter, "session counter is invalid",
+           path: [:session, :generated_id_counter]
+         )}
+
+      {:error, _diagnostic} = error ->
+        error
+    end
+  end
+
   @doc "Checks the Registry, limits, and profile contracts for execution or restore."
   @spec validate_contract(t(), Registry.t(), Limits.t()) :: :ok | {:error, Diagnostic.t()}
   def validate_contract(%__MODULE__{} = session, %Registry{} = registry, %Limits{} = limits) do
+    with {:ok, limits} <- Limits.new(Map.from_struct(limits)) do
+      validate_contract_values(session, registry, limits)
+    end
+  end
+
+  defp validate_contract_values(session, registry, limits) do
     cond do
       session.profile_version != Profile.version() ->
         {:error,
@@ -918,6 +960,19 @@ defmodule Jido.Statechart.Session do
            path: [:session, field]
          )}
   end
+
+  defp required_counter(attrs, field, true) do
+    if Diagnostic.fetch(attrs, field, :missing) == :missing do
+      {:error,
+       Diagnostic.new(:missing_session_counter, "stored session counter is missing",
+         path: [:session, field]
+       )}
+    else
+      :ok
+    end
+  end
+
+  defp required_counter(_attrs, _field, false), do: :ok
 
   defp ids(values, field) when is_list(values) do
     values

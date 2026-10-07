@@ -10,6 +10,13 @@ defmodule Jido.Statechart.ContractValidationTest do
   @digest_b String.duplicate("b", 64)
   @digest_c String.duplicate("c", 64)
 
+  defmodule TestAction do
+    use Jido.Action, name: "contract_validation_action"
+
+    @impl true
+    def run(params, _context), do: {:ok, params}
+  end
+
   test "operation identity binds every immutable delivery field" do
     attrs = operation_attrs()
     {:ok, baseline} = Operation.identity(attrs)
@@ -133,6 +140,37 @@ defmodule Jido.Statechart.ContractValidationTest do
              Session.new(
                Map.take(dump, ~w(id incarnation chart_fingerprint registry_digest limits_digest))
              )
+  end
+
+  test "session stores and strictly validates the generated ID counter" do
+    session = session_fixture(%{generated_id_counter: 7})
+    dump = Session.dump(session)
+
+    assert dump["generated_id_counter"] == 7
+    assert {:ok, ^session} = Session.load(dump)
+
+    assert {:error, %Diagnostic{code: :missing_session_counter}} =
+             dump |> Map.delete("generated_id_counter") |> Session.load()
+
+    for value <- [-1, 1.5, "1", nil] do
+      assert {:error,
+              %Diagnostic{
+                code: :invalid_session_counter,
+                path: [:session, :generated_id_counter]
+              }} = Session.new(%{session | generated_id_counter: value})
+    end
+
+    assert {:ok, first} = Session.generated_send_id("session-1", "incarnation-1", 7)
+    assert {:ok, second} = Session.generated_send_id("session-1", "incarnation-1", 8)
+    assert {:ok, other_session} = Session.generated_send_id("session-2", "incarnation-1", 7)
+    assert {:ok, other_incarnation} = Session.generated_send_id("session-1", "incarnation-2", 7)
+
+    assert String.starts_with?(first, Session.generated_id_prefix())
+
+    assert Enum.uniq([first, second, other_session, other_incarnation]) ==
+             [first, second, other_session, other_incarnation]
+
+    refute String.starts_with?(first, "op_v1_")
   end
 
   test "public map loaders reject unknown and atom-string duplicate fields" do
@@ -464,7 +502,7 @@ defmodule Jido.Statechart.ContractValidationTest do
       kind: :action,
       alias: "work",
       permissions: ["write:data", "write:data"],
-      handler: __MODULE__,
+      handler: TestAction,
       metadata: %{"team" => "runtime"}
     }
 
@@ -689,6 +727,7 @@ defmodule Jido.Statechart.ContractValidationTest do
     inspected_session = Jido.Statechart.inspect_session(session)
     assert inspected_session["completed"]
     assert inspected_session["trace_entries"] == 1
+    assert inspected_session["generated_id_counter"] == 0
     refute Map.has_key?(inspected_session, "trace")
   end
 

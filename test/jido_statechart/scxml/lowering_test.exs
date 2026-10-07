@@ -157,6 +157,22 @@ defmodule Jido.Statechart.SCXML.LoweringTest do
     assert work.transition_ids == [hd(chart.transitions).id]
   end
 
+  test "records data declaration document order" do
+    xml = """
+    <scxml xmlns="#{@uri}" version="1.0" datamodel="jido">
+      <datamodel>
+        <data id="z" expr="z_value"/>
+        <data id="a" expr="copy_z"/>
+      </datamodel>
+      <state id="ready"/>
+    </scxml>
+    """
+
+    assert {:ok, chart} = SCXML.compile(xml)
+    assert chart.metadata["root_data"]["z"]["ordinal"] == 0
+    assert chart.metadata["root_data"]["a"]["ordinal"] == 1
+  end
+
   test "accepts legal multi-target transitions across parallel regions" do
     assert {:ok, chart} =
              compile_body("""

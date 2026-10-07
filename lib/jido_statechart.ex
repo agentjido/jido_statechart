@@ -45,6 +45,7 @@ defmodule Jido.Statechart do
       "profile_version" => session.profile_version,
       "status" => Atom.to_string(session.status),
       "revision" => session.revision,
+      "generated_id_counter" => session.generated_id_counter,
       "configuration" => session.configuration,
       "history" => session.history,
       "completed" => session.status in [:completed, :cleaning, :stopped],

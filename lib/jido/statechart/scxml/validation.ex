@@ -1,7 +1,7 @@
 defmodule Jido.Statechart.SCXML.Validation do
   @moduledoc false
 
-  alias Jido.Statechart.Diagnostic
+  alias Jido.Statechart.{Diagnostic, Location, Session}
 
   @scxml "http://www.w3.org/2005/07/scxml"
   @jido "urn:jido:statechart:1"
@@ -310,6 +310,7 @@ defmodule Jido.Statechart.SCXML.Validation do
   defp element_values(node, "data") do
     with :ok <- required_value(node, "id"),
          :ok <- optional_identifier(node, "id"),
+         :ok <- location_segment_identifier(node, "id"),
          :ok <- external_source(node),
          :ok <- at_most_one_value(node, ~w(src expr), meaningful_content?(node)) do
       :ok
@@ -601,7 +602,15 @@ defmodule Jido.Statechart.SCXML.Validation do
       value ->
         case Diagnostic.validate_id(value, node.source.path ++ [name]) do
           :ok ->
-            :ok
+            if String.starts_with?(value, Session.generated_id_prefix()) do
+              error(
+                node,
+                :reserved_generated_id,
+                "SCXML authors cannot use the processor-generated identifier prefix"
+              )
+            else
+              :ok
+            end
 
           {:error, diagnostic} ->
             {:error,
@@ -611,6 +620,16 @@ defmodule Jido.Statechart.SCXML.Validation do
                  profile_feature: profile_feature(node)
              }}
         end
+    end
+  end
+
+  defp location_segment_identifier(node, name) do
+    case Location.parse(attribute(node, name)) do
+      {:ok, [_segment]} ->
+        :ok
+
+      _other ->
+        error(node, :invalid_id, "Data identifier must be one legal location segment")
     end
   end
 

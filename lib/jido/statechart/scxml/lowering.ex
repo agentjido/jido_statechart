@@ -467,14 +467,16 @@ defmodule Jido.Statechart.SCXML.Lowering do
       |> Enum.flat_map(&child_elements/1)
       |> Enum.filter(&(local(&1) == "data"))
 
-    Enum.reduce_while(entries, {:ok, %{}}, fn data, {:ok, acc} ->
+    entries
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, %{}}, fn {data, ordinal}, {:ok, acc} ->
       id = optional_attribute(data, "id")
 
       if Map.has_key?(acc, id) do
         {:halt, error(data, :duplicate_data_id, "Data identifier is duplicated")}
       else
         value =
-          %{}
+          %{"ordinal" => ordinal}
           |> put_if("expr", optional_attribute(data, "expr"))
           |> put_if("content", content_value(data))
 

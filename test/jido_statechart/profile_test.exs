@@ -3,6 +3,13 @@ defmodule Jido.Statechart.ProfileTest do
 
   alias Jido.Statechart.{Diagnostic, Limits, Profile, Registry, Session}
 
+  defmodule TestAction do
+    use Jido.Action, name: "profile_test_action"
+
+    @impl true
+    def run(params, _context), do: {:ok, params}
+  end
+
   test "the capability manifest has deterministic status and evidence rows" do
     first = Profile.manifest()
     second = Profile.manifest()
@@ -69,7 +76,7 @@ defmodule Jido.Statechart.ProfileTest do
             kind: :action,
             alias: "record",
             permissions: ["read:data", "write:data"],
-            handler: __MODULE__
+            handler: TestAction
           }
         ]
       })
@@ -114,6 +121,13 @@ defmodule Jido.Statechart.ProfileTest do
                registry,
                Limits.new!(%{Limits.defaults() | trace_entries: 2})
              )
+
+    assert {:error, %Diagnostic{code: :limit_out_of_range}} =
+             Session.validate_contract(
+               session,
+               registry,
+               %{Limits.default() | data_bytes: -1}
+             )
   end
 
   test "Registry rejects cross-kind aliases and duplicate replacements" do
@@ -129,7 +143,7 @@ defmodule Jido.Statechart.ProfileTest do
     registry =
       Registry.new!(%{
         version: "registry-1",
-        entries: [%{kind: :action, alias: "work", permissions: [], handler: __MODULE__}]
+        entries: [%{kind: :action, alias: "work", permissions: [], handler: TestAction}]
       })
 
     assert {:error, %Diagnostic{code: :registry_replacement}} =

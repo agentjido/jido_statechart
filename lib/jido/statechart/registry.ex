@@ -144,7 +144,8 @@ defmodule Jido.Statechart.Registry do
     with :ok <- Diagnostic.validate_fields(attrs, @fields, [:registry]),
          {:ok, version} <- Diagnostic.require_string(attrs, :version, [:registry]),
          {:ok, entries} <- entries(Diagnostic.fetch(attrs, :entries, [])),
-         :ok <- unique_aliases(entries) do
+         :ok <- unique_aliases(entries),
+         :ok <- trusted_action_handlers(entries) do
       entries = Enum.sort_by(entries, &{&1.name, &1.kind})
       base = %{"version" => version, "entries" => Enum.map(entries, &Entry.manifest/1)}
 
@@ -234,5 +235,50 @@ defmodule Jido.Statechart.Registry do
       %MapSet{} -> :ok
       error -> error
     end
+  end
+
+  defp trusted_action_handlers(entries) do
+    entries
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn
+      {%Entry{kind: :action, handler: handler}, index}, :ok ->
+        case static_action_module(handler) do
+          :ok ->
+            {:cont, :ok}
+
+          {:error, diagnostic} ->
+            {:halt, {:error, Diagnostic.prefix(diagnostic, [:registry, :entries, index])}}
+        end
+
+      {_entry, _index}, :ok ->
+        {:cont, :ok}
+    end)
+  end
+
+  defp static_action_module(module) when is_atom(module) and not is_nil(module) do
+    with {:module, ^module} <- Code.ensure_loaded(module),
+         attributes <- module.module_info(:attributes),
+         true <- Jido.Action in List.wrap(attributes[:behaviour]),
+         true <- function_exported?(module, :run, 2),
+         true <- function_exported?(module, :validate_params, 1),
+         true <- function_exported?(module, :validate_output, 1),
+         true <- function_exported?(module, :__jido_executable__, 0) do
+      :ok
+    else
+      _reason -> invalid_action_handler()
+    end
+  rescue
+    _exception -> invalid_action_handler()
+  end
+
+  defp static_action_module(_handler), do: invalid_action_handler()
+
+  defp invalid_action_handler do
+    {:error,
+     Diagnostic.new(
+       :invalid_registry_handler,
+       "Action Registry handler must implement the static Jido.Action contract",
+       path: [:handler]
+     )}
   end
 end

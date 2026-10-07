@@ -44,6 +44,8 @@ defmodule Jido.Statechart.SCXML.ValidationTest do
       {body(~s(<state id="s"><transition event=""/></state>)), :invalid_attribute_value},
       {body(~s(<state id="s"><datamodel><data/></datamodel></state>)),
        :missing_required_attribute},
+      {body(~s(<state id="s"><datamodel><data id="user.name"/></datamodel></state>)),
+       :invalid_id},
       {body(~s(<state id="s"><onentry><raise/></onentry></state>)), :missing_required_attribute},
       {body(~s(<state id="s"><onentry><if/></onentry></state>)), :missing_required_attribute},
       {body(~s(<state id="s"><onentry><if cond="x"><elseif/></if></onentry></state>)),
@@ -63,6 +65,19 @@ defmodule Jido.Statechart.SCXML.ValidationTest do
 
     for {xml, code} <- cases do
       assert {:error, %Diagnostic{code: ^code}} = SCXML.compile(xml)
+    end
+  end
+
+  test "reserves the system-generated identifier prefix from authors" do
+    prefix = "__jido_scxml_generated_"
+
+    for xml <- [
+          body(~s(<state id="#{prefix}state"/>)),
+          body(
+            ~s(<state id="s"><onentry><send event="work" id="#{prefix}send"/></onentry></state>)
+          )
+        ] do
+      assert {:error, %Diagnostic{code: :reserved_generated_id}} = SCXML.compile(xml)
     end
   end
 
