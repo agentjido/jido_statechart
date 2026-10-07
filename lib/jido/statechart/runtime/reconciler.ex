@@ -8,6 +8,9 @@ defmodule Jido.Statechart.Runtime.Reconciler do
   @type action ::
           {:schedule, Operation.t()}
           | {:dispatch, Operation.t()}
+          | {:invoke, Operation.t()}
+          | {:stop_invoke, Operation.t()}
+          | {:emit_to_child, Operation.t()}
           | {:cancel, Operation.t(), Operation.t() | nil}
           | {:cancel_replaced, Operation.t(), Operation.t()}
           | {:cancel_stale, Operation.t(), non_neg_integer()}
@@ -43,6 +46,9 @@ defmodule Jido.Statechart.Runtime.Reconciler do
           if active_cancel_target?(operation, operations),
             do: [],
             else: [{:complete_cancel, operation}]
+
+        %Operation{kind: :invoke, state: :cancel_requested} ->
+          []
 
         %Operation{state: :cancel_requested} = operation ->
           [{:confirm_cancel, operation}]
@@ -110,21 +116,54 @@ defmodule Jido.Statechart.Runtime.Reconciler do
 
   defp operation_action(%Operation{kind: :cancel}, _now), do: []
 
-  defp operation_action(%Operation{state: :not_started} = operation, now) do
+  defp operation_action(%Operation{kind: :invoke, state: :not_started} = operation, _now),
+    do: [{:invoke, operation}]
+
+  defp operation_action(%Operation{kind: :invoke, state: :result_unknown} = operation, now) do
+    if Timer.due?(operation.next_attempt_at, now), do: [{:invoke, operation}], else: []
+  end
+
+  defp operation_action(%Operation{kind: :child_stop, state: :not_started} = operation, _now),
+    do: [{:stop_invoke, operation}]
+
+  defp operation_action(%Operation{kind: :child_stop, state: :result_unknown} = operation, now) do
+    if Timer.due?(operation.next_attempt_at, now), do: [{:stop_invoke, operation}], else: []
+  end
+
+  defp operation_action(
+         %Operation{
+           kind: :child_start,
+           state: state,
+           correlation: %{"kind" => "invoke_send"}
+         } =
+           operation,
+         now
+       )
+       when state in [:not_started, :result_unknown] do
+    if state == :not_started or Timer.due?(operation.next_attempt_at, now),
+      do: [{:emit_to_child, operation}],
+      else: []
+  end
+
+  defp operation_action(%Operation{kind: kind, state: :not_started} = operation, now)
+       when kind in [:send, :timer] do
     if Timer.due?(operation.due_at, now), do: [{:schedule, operation}], else: []
   end
 
   defp operation_action(
-         %Operation{state: :result_unknown, next_attempt_at: nil} = operation,
+         %Operation{kind: kind, state: :result_unknown, next_attempt_at: nil} = operation,
          _now
-       ),
+       )
+       when kind in [:send, :timer],
        do: [{:dispatch, operation}]
 
-  defp operation_action(%Operation{state: :result_unknown} = operation, now) do
+  defp operation_action(%Operation{kind: kind, state: :result_unknown} = operation, now)
+       when kind in [:send, :timer] do
     if Timer.due?(operation.next_attempt_at, now), do: [{:schedule, operation}], else: []
   end
 
-  defp operation_action(%Operation{state: :retryable_failure} = operation, now) do
+  defp operation_action(%Operation{kind: kind, state: :retryable_failure} = operation, now)
+       when kind in [:send, :timer] do
     if Timer.due?(operation.next_attempt_at, now), do: [{:schedule, operation}], else: []
   end
 

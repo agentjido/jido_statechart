@@ -123,7 +123,9 @@ defmodule Jido.Statechart.Agent.Extension do
   end
 
   defp add_runtime_routes(routes) do
-    with :ok <- available(routes, Agent.reserved_signal_types()),
+    runtime_paths = Agent.reserved_signal_types() ++ Agent.child_lifecycle_signal_types()
+
+    with :ok <- available(routes, runtime_paths),
          {:ok, runtime_routes} <- runtime_routes(),
          {:ok, fallback} <- fallback(routes) do
       {:ok, routes ++ runtime_routes ++ List.wrap(fallback)}
@@ -143,7 +145,7 @@ defmodule Jido.Statechart.Agent.Extension do
   end
 
   defp runtime_routes do
-    Agent.reserved_signal_types()
+    (Agent.reserved_signal_types() ++ Agent.child_lifecycle_signal_types())
     |> Enum.reduce_while({:ok, []}, fn type, {:ok, routes} ->
       target =
         cond do
@@ -151,6 +153,8 @@ defmodule Jido.Statechart.Agent.Extension do
           type == Agent.cleanup_signal_type() -> Route.Cleanup
           type == Agent.reconciliation_signal_type() -> Jido.Statechart.Plugin.Schedule
           type == Agent.delivery_signal_type() -> Jido.Statechart.Plugin.RuntimeResult
+          type == Agent.child_signal_type() -> Jido.Statechart.Plugin.ChildResult
+          type in Agent.child_lifecycle_signal_types() -> Route.ChildLifecycle
           true -> Route.Reserved
         end
 

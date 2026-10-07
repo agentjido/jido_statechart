@@ -13,6 +13,13 @@ defmodule Jido.Statechart.Plugin.Schedule do
       %Input{prepared: %{kind: :runtime_cancel}} ->
         Jido.Statechart.Plugin.Cancel.run(params, context)
 
+      %Input{prepared: %{kind: kind}}
+      when kind in [:runtime_invoke, :runtime_invoke_forward] ->
+        Jido.Statechart.Plugin.Invoke.run(params, context)
+
+      %Input{prepared: %{kind: :runtime_stop_invoke}} ->
+        Jido.Statechart.Plugin.StopInvoke.run(params, context)
+
       _other ->
         schedule(context)
     end

@@ -4,7 +4,8 @@ defmodule Jido.Statechart.Plugin.Persistence do
   alias Jido.Persistence.Plugin.Context
   alias Jido.Statechart.{Limits, Plugin, Registry, Session}
 
-  @checkpoint_version 4
+  @checkpoint_version 5
+  @version_four 4
   @version_three 3
   @version_two 2
   @version_one 1
@@ -55,6 +56,22 @@ defmodule Jido.Statechart.Plugin.Persistence do
 
   @doc false
   def migrate(%{"checkpoint_version" => @checkpoint_version} = value, _opts), do: {:ok, value}
+
+  def migrate(%{"checkpoint_version" => @version_four} = value, _opts) do
+    with true <- Map.keys(value) |> Enum.sort() == Enum.sort(@fields),
+         {:ok, session} <- migrate_session(value["session"]) do
+      {:ok,
+       value
+       |> Map.put("checkpoint_version", @checkpoint_version)
+       |> Map.put(
+         "runtime_protocol_version",
+         Session.contract_versions().runtime_protocol_version
+       )
+       |> Map.put("session", session)}
+    else
+      _other -> {:error, :invalid_statechart_v4_checkpoint}
+    end
+  end
 
   def migrate(%{"checkpoint_version" => @version_three} = value, _opts) do
     with true <- Map.keys(value) |> Enum.sort() == Enum.sort(@fields),
@@ -184,20 +201,37 @@ defmodule Jido.Statechart.Plugin.Persistence do
 
   defp migrate_session(nil), do: {:ok, nil}
 
-  defp migrate_session(session) when is_map(session) do
-    versions = Session.contract_versions()
+  defp migrate_session(%{"schema_version" => 3, "runtime_protocol_version" => 3} = session),
+    do: {:ok, Map.put_new(session, "invocation_descendants_used", 0)}
 
+  defp migrate_session(%{"schema_version" => 2, "runtime_protocol_version" => 2} = session) do
+    {:ok,
+     session
+     |> Map.put("schema_version", Session.contract_versions().schema_version)
+     |> Map.put(
+       "runtime_protocol_version",
+       Session.contract_versions().runtime_protocol_version
+     )
+     |> Map.put("invocation_ancestry", [session["chart_fingerprint"]])
+     |> Map.put("invocation_depth", 0)
+     |> Map.put("invocation_remaining_descendants", nil)
+     |> Map.put("invocation_descendants_used", 0)}
+  end
+
+  defp migrate_session(session) when is_map(session) do
     with true <- Map.get(session, "schema_version") == 1,
          true <- Map.get(session, "runtime_protocol_version") == 1,
          operations when is_map(operations) <- Map.get(session, "operations"),
          tombstones when is_map(tombstones) <- Map.get(session, "operation_tombstones"),
          {:ok, high_water} <- legacy_high_water(operations, tombstones) do
-      {:ok,
-       session
-       |> Map.put("schema_version", versions.schema_version)
-       |> Map.put("runtime_protocol_version", versions.runtime_protocol_version)
-       |> Map.put("operation_high_water", high_water)
-       |> Map.put("received_operation_ids", [])}
+      session =
+        session
+        |> Map.put("schema_version", 2)
+        |> Map.put("runtime_protocol_version", 2)
+        |> Map.put("operation_high_water", high_water)
+        |> Map.put("received_operation_ids", [])
+
+      migrate_session(session)
     else
       _other -> {:error, :unsupported_statechart_session_migration}
     end

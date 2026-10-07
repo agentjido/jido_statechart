@@ -533,27 +533,75 @@ defmodule Jido.Statechart.SCXML.Lowering do
 
   defp metadata(root, entries, index) do
     with {:ok, root_data} <- data(root),
-         {:ok, initial_content} <- initial_transition_content(entries, index) do
+         {:ok, initial_content} <- initial_transition_content(entries, index),
+         {:ok, invocations} <- invocations(entries) do
       {:ok,
        %{
          "root_initial" => root_initial(root, entries),
          "root_data" => root_data,
          "initial_transition_content" => initial_content,
-         "invocations" => invocations(entries),
+         "invocations" => invocations,
          "profile_manifest_digest" => Profile.manifest()["digest"]
        }}
     end
   end
 
   defp invocations(entries) do
-    Map.new(entries, fn entry ->
-      values =
-        for child <- child_elements(entry.node), local(child) == "invoke", do: profile_node(child)
+    Enum.reduce_while(entries, {:ok, %{}}, fn entry, {:ok, acc} ->
+      invokes =
+        entry.node
+        |> child_elements()
+        |> Enum.filter(&(local(&1) == "invoke"))
 
-      {entry.id, values}
+      case lower_invocations(invokes, entry.id) do
+        {:ok, []} -> {:cont, {:ok, acc}}
+        {:ok, values} -> {:cont, {:ok, Map.put(acc, entry.id, values)}}
+        {:error, _diagnostic} = error -> {:halt, error}
+      end
     end)
-    |> Enum.reject(fn {_id, values} -> values == [] end)
-    |> Map.new()
+  end
+
+  defp lower_invocations(invokes, state_id) do
+    invokes
+    |> Enum.with_index()
+    |> Enum.reduce_while({:ok, []}, fn {invoke, ordinal}, {:ok, acc} ->
+      finalize = Enum.find(child_elements(invoke), &(local(&1) == "finalize"))
+
+      with {:ok, finalize_content} <- if(finalize, do: executables(finalize), else: {:ok, []}) do
+        attributes = attributes_map(invoke)
+
+        invoke_id =
+          attributes["id"] ||
+            Chart.generated_id("invoke", path_numbers(invoke.source.path), ordinal)
+
+        params =
+          for child <- child_elements(invoke), local(child) == "param", do: attributes_map(child)
+
+        content = Enum.find(child_elements(invoke), &(local(&1) == "content"))
+
+        value =
+          profile_node(invoke)
+          |> Map.merge(%{
+            "state_id" => state_id,
+            "ordinal" => ordinal,
+            "invoke_id" => invoke_id,
+            "type" => attributes["type"] || "scxml",
+            "capability" => attributes["src"],
+            "autoforward" => attributes["autoforward"] == "true",
+            "params" => params,
+            "invoke_content" => if(content, do: content_value(content)),
+            "finalize" => Enum.map(finalize_content, &Executable.dump/1)
+          })
+
+        {:cont, {:ok, [value | acc]}}
+      else
+        {:error, _diagnostic} = error -> {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, values} -> {:ok, Enum.reverse(values)}
+      error -> error
+    end
   end
 
   defp initial_transition_content(entries, _index) do

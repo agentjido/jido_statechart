@@ -1,7 +1,7 @@
 defmodule Jido.Statechart.Runtime.Intent do
   @moduledoc "Materializes complete immutable runtime intent during a macrostep."
 
-  alias Jido.Statechart.Runtime.{Target, Timer}
+  alias Jido.Statechart.Runtime.{Invocation, Target, Timer}
   alias Jido.Statechart.Session.Operation
   alias Jido.Statechart.{Diagnostic, Limits, Registry, Session}
 
@@ -35,6 +35,14 @@ defmodule Jido.Statechart.Runtime.Intent do
 
       kind when kind in [:cancel, "cancel"] ->
         cancel_intent(value, session, generation, created_revision)
+
+      kind
+      when kind in [:invoke, "invoke", :stop_invoke, "stop_invoke", :invoke_send, "invoke_send"] ->
+        Invocation.from_semantic(value, session, registry, limits, now,
+          generation: generation,
+          created_revision: created_revision,
+          prior_operations: Keyword.get(options, :prior_operations, [])
+        )
 
       _other ->
         {:error, Diagnostic.new(:invalid_operation_kind, "Runtime intent kind is invalid")}

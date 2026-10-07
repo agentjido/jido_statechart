@@ -5,7 +5,7 @@ defmodule Jido.Statechart.Plugin.Runtime do
   alias Jido.AgentServer.Plugin.{Admission, Commit}
   alias Jido.Plugin.Init
   alias Jido.Statechart.Agent
-  alias Jido.Statechart.Runtime.{Reconciler, Server, Timer}
+  alias Jido.Statechart.Runtime.{Child, Reconciler, Server, Timer}
   alias Jido.Statechart.{Diagnostic, Plugin, Session}
 
   @proof "jidoscproof"
@@ -43,16 +43,52 @@ defmodule Jido.Statechart.Plugin.Runtime do
   end
 
   @doc false
+  def child_control_ack(runtime, acknowledgement, plugin_state) do
+    GenServer.cast(runtime, {:child_control_ack, acknowledgement, plugin_state})
+    :ok
+  end
+
+  @doc false
+  def owned_child_control(runtime, control, opts) do
+    GenServer.call(
+      runtime,
+      {:owned_child_control, control},
+      Keyword.get(opts, :runtime_timeout, 5_000)
+    )
+  catch
+    :exit, reason -> {:error, {:statechart_runtime_unavailable, reason}}
+  end
+
+  @doc false
   def initialization_signal(server) do
     with {:ok, runtime} <- lookup(server),
+         data <- initialization_context(server),
          signal <-
-           Jido.Signal.new!(Agent.initialization_signal_type(), %{},
+           Jido.Signal.new!(Agent.initialization_signal_type(), data,
              source: "/jido/statechart/runtime"
            ) do
       GenServer.call(runtime, {:sign, signal, "initialize", 0})
     end
   catch
     :exit, reason -> {:error, {:statechart_runtime_unavailable, reason}}
+  end
+
+  defp initialization_context(server) do
+    case Jido.AgentServer.status(server) do
+      %{runtime: %{parent: %{meta: meta}}} when is_map(meta) ->
+        if is_binary(meta["jido_statechart_operation_id"]) do
+          %{
+            "invocation_ancestry" => meta["jido_statechart_ancestry"],
+            "invocation_depth" => meta["jido_statechart_depth"],
+            "invocation_remaining_descendants" => meta["jido_statechart_remaining_descendants"]
+          }
+        else
+          %{}
+        end
+
+      _other ->
+        %{}
+    end
   end
 
   @doc false
@@ -85,6 +121,11 @@ defmodule Jido.Statechart.Plugin.Runtime do
        attempts_supervisor: attempts_supervisor,
        cleanup_request: nil,
        attempts: %{},
+       controls: %{},
+       child_results: %{},
+       child_view: %{},
+       pending_child_tags: MapSet.new(),
+       owned_invocations: MapSet.new(),
        timers: %{},
        turn_times: [],
        rescan_timer: nil
@@ -113,8 +154,65 @@ defmodule Jido.Statechart.Plugin.Runtime do
     {:reply, verify_admission(admission, state), state}
   end
 
+  def handle_call({:owned_child_control, control}, _from, state) do
+    operation = %{
+      id: control.invoke_operation_id,
+      generation: control.invoke_generation,
+      target: control.tag,
+      session_incarnation: control.session_incarnation,
+      correlation: %{"invoke_id" => control.invoke_id}
+    }
+
+    children = Jido.AgentServer.children(state.agent_server, state.options.rescan_timeout)
+
+    child =
+      Enum.find_value(children, fn {_key, child} ->
+        if Map.get(child, :tag) == control.tag, do: child
+      end)
+
+    result =
+      cond do
+        is_map(child) and Child.owned?(child, operation) ->
+          perform_owned_control(control, child)
+
+        is_nil(child) and control.action == :stop ->
+          :ok
+
+        true ->
+          {:error, {:statechart_child_ownership_conflict, control.control_operation_id}}
+      end
+
+    {:reply, result, state}
+  catch
+    :exit, reason ->
+      {:reply, {:error, {:statechart_child_control_failed, reason}}, state}
+  end
+
   @impl true
   def handle_cast(:rescan, state), do: {:noreply, wake_rescan(state)}
+
+  def handle_cast(
+        {:child_control_ack, acknowledgement, %{session: %Session{} = session}},
+        state
+      ) do
+    operation = Map.get(session.operations, acknowledgement.operation_id)
+
+    state =
+      case operation do
+        %{kind: :child_start, generation: generation, session_incarnation: incarnation}
+        when generation == acknowledgement.generation and
+               incarnation == acknowledgement.session_incarnation ->
+          send_child_result(state, session, operation, "forwarded", %{})
+
+        _other ->
+          state
+      end
+
+    {:noreply, wake_rescan(state)}
+  end
+
+  def handle_cast({:child_control_ack, _acknowledgement, _plugin_state}, state),
+    do: {:noreply, state}
 
   @impl true
   def handle_info(:rescan, state) do
@@ -216,6 +314,12 @@ defmodule Jido.Statechart.Plugin.Runtime do
     {:noreply, wake_rescan(state)}
   end
 
+  defp perform_owned_control(%{action: :emit, signal: %Jido.Signal{} = signal}, child),
+    do: Jido.AgentServer.cast(child.pid, signal)
+
+  defp perform_owned_control(%{action: :stop}, child),
+    do: Jido.AgentServer.stop(child.pid, :normal, 5_000)
+
   defp maybe_cleanup(state, %{session: %Session{status: :completed} = session}) do
     if state.options.stop_on_done do
       cond do
@@ -243,6 +347,7 @@ defmodule Jido.Statechart.Plugin.Runtime do
     now = DateTime.utc_now()
     state = prune_projection(state, session)
     state = sync_timers(state, session, now)
+    state = sync_children(state, session)
 
     state =
       session
@@ -346,7 +451,202 @@ defmodule Jido.Statechart.Plugin.Runtime do
     end
   end
 
+  defp execute_action(state, session, {:invoke, operation}) do
+    cond do
+      stop_desired?(session, operation) ->
+        state
+
+      owned_child?(state, operation) ->
+        if operation.state == :not_started,
+          do: send_child_result(state, session, operation, "started", %{}),
+          else: state
+
+      Map.has_key?(state.child_view, operation.target) ->
+        send_child_result(
+          state,
+          session,
+          operation,
+          "failed",
+          %{"reason" => "child_ownership_conflict"}
+        )
+
+      MapSet.member?(state.pending_child_tags, operation.target) ->
+        state
+
+      operation.attempt_count >= state.options.retry_limit ->
+        send_child_result(
+          state,
+          session,
+          operation,
+          "failed",
+          %{"reason" => "child_start_failed"}
+        )
+
+      true ->
+        data = %{
+          "action" => "invoke",
+          "generation" => operation.generation,
+          "operation_id" => operation.id,
+          "session_revision" => session.revision
+        }
+
+        cast_child_control(state, session, operation, data, "invoke")
+    end
+  end
+
+  defp execute_action(state, session, {:stop_invoke, operation}) do
+    invoke = correlated_invoke(session, operation)
+
+    cond do
+      pending_forward?(session, operation) ->
+        state
+
+      MapSet.member?(state.pending_child_tags, operation.target) ->
+        state
+
+      owned_child?(state, invoke) ->
+        if operation.attempt_count >= state.options.retry_limit do
+          send_child_result(
+            state,
+            session,
+            operation,
+            "failed",
+            %{"reason" => "child_stop_failed"}
+          )
+        else
+          stop_child_control(state, session, operation)
+        end
+
+      Map.has_key?(state.child_view, operation.target) ->
+        send_child_result(
+          state,
+          session,
+          operation,
+          "failed",
+          %{"reason" => "child_ownership_conflict"}
+        )
+
+      true ->
+        if unsettled_invoke?(session, operation) do
+          stop_child_control(state, session, operation)
+        else
+          send_child_result(state, session, operation, "stopped", %{})
+        end
+    end
+  end
+
+  defp execute_action(state, session, {:emit_to_child, operation}) do
+    invoke = correlated_invoke(session, operation)
+
+    cond do
+      owned_child?(state, invoke) and operation.attempt_count >= state.options.retry_limit ->
+        send_child_result(
+          state,
+          session,
+          operation,
+          "failed",
+          %{"reason" => "child_emit_failed"}
+        )
+
+      owned_child?(state, invoke) ->
+        data = %{
+          "action" => "emit_to_child",
+          "generation" => operation.generation,
+          "operation_id" => operation.id,
+          "session_revision" => session.revision
+        }
+
+        cast_child_control(state, session, operation, data, "emit-to-child")
+
+      Map.has_key?(state.child_view, operation.target) ->
+        send_child_result(
+          state,
+          session,
+          operation,
+          "failed",
+          %{"reason" => "child_ownership_conflict"}
+        )
+
+      true ->
+        send_child_result(state, session, operation, "failed", %{"reason" => "child_not_found"})
+    end
+  end
+
+  defp stop_child_control(state, session, operation) do
+    data = %{
+      "action" => "stop_invoke",
+      "generation" => operation.generation,
+      "operation_id" => operation.id,
+      "session_revision" => session.revision
+    }
+
+    cast_child_control(state, session, operation, data, "stop-invoke")
+  end
+
+  defp unsettled_invoke?(session, stop) do
+    case Map.get(session.operations, stop.correlation["invoke_operation_id"]) do
+      %{kind: :invoke, state: state} when state in [:not_started, :result_unknown] -> true
+      _other -> false
+    end
+  end
+
+  defp pending_forward?(session, stop) do
+    Enum.any?(session.operations, fn
+      {_id, %{kind: :child_start, correlation: correlation} = forward} ->
+        correlation["kind"] == "invoke_send" and
+          correlation["invoke_operation_id"] == stop.correlation["invoke_operation_id"] and
+          forward.generation < stop.generation and not Session.Operation.terminal?(forward)
+
+      _other ->
+        false
+    end)
+  end
+
+  defp correlated_invoke(session, operation) do
+    Map.get(session.operations, operation.correlation["invoke_operation_id"]) ||
+      %{
+        id: operation.correlation["invoke_operation_id"],
+        generation: operation.correlation["invoke_generation"],
+        target: operation.target,
+        session_incarnation: operation.session_incarnation,
+        correlation: %{"invoke_id" => operation.correlation["invoke_id"]}
+      }
+  end
+
+  defp cast_child_control(state, session, operation, data, kind) do
+    now = System.monotonic_time(:millisecond)
+    retry_after = max(state.options.rescan_interval * 100, 5_000)
+    requested_action = data["action"]
+
+    case Map.get(state.controls, operation.id) do
+      %{generation: generation, action: action, sent_at: sent_at}
+      when generation == operation.generation and action == requested_action and
+             now - sent_at < retry_after ->
+        state
+
+      _other ->
+        case cast_control_result(state, session, operation, data, kind) do
+          {:sent, state} ->
+            control = %{
+              generation: operation.generation,
+              action: requested_action,
+              sent_at: now
+            }
+
+            %{state | controls: Map.put(state.controls, operation.id, control)}
+
+          {:not_sent, state} ->
+            state
+        end
+    end
+  end
+
   defp cast_control(state, session, operation, data, kind) do
+    {_status, state} = cast_control_result(state, session, operation, data, kind)
+    state
+  end
+
+  defp cast_control_result(state, session, operation, data, kind) do
     signal =
       Jido.Signal.new!(Agent.reconciliation_signal_type(), data,
         id: runtime_signal_id(kind, operation.id, operation.attempt_count, data),
@@ -358,14 +658,14 @@ defmodule Jido.Statechart.Plugin.Runtime do
         case sign(signal, operation.id, operation.generation, state, session.incarnation) do
           {:ok, signal} ->
             Jido.AgentServer.cast(state.agent_server, signal)
-            state
+            {:sent, state}
 
           {:error, _reason} ->
-            state
+            {:not_sent, state}
         end
 
       {:error, state} ->
-        state
+        {:not_sent, state}
     end
   end
 
@@ -442,7 +742,216 @@ defmodule Jido.Statechart.Plugin.Runtime do
         end
       end)
 
-    %{state | attempts: attempts}
+    active_ids = Map.keys(session.operations) |> MapSet.new()
+    controls = Map.filter(state.controls, fn {id, _value} -> MapSet.member?(active_ids, id) end)
+
+    child_results =
+      Map.filter(state.child_results, fn {id, _value} -> MapSet.member?(active_ids, id) end)
+
+    %{state | attempts: attempts, controls: controls, child_results: child_results}
+  end
+
+  defp sync_children(state, session) do
+    if invocation_ledger?(session) do
+      do_sync_children(state, session)
+    else
+      %{
+        state
+        | child_view: %{},
+          pending_child_tags: MapSet.new(),
+          owned_invocations: MapSet.new()
+      }
+    end
+  end
+
+  defp do_sync_children(state, session) do
+    {children, pending} = child_projection(state)
+
+    owned =
+      session.operations
+      |> Map.values()
+      |> Enum.filter(&(&1.kind == :invoke and owned_child?(children, &1)))
+      |> MapSet.new(& &1.id)
+
+    disappeared = MapSet.difference(state.owned_invocations, owned)
+
+    state = %{
+      state
+      | child_view: children,
+        pending_child_tags: pending,
+        owned_invocations: owned
+    }
+
+    state = reconcile_standard_children(state, session)
+
+    Enum.reduce(disappeared, state, fn id, current ->
+      case Map.get(session.operations, id) do
+        %{kind: :invoke, state: :result_unknown} = operation ->
+          if stop_desired?(session, operation) do
+            current
+          else
+            send_child_result(
+              current,
+              session,
+              operation,
+              "failed",
+              %{"reason" => "child_exit"}
+            )
+          end
+
+        _other ->
+          current
+      end
+    end)
+  end
+
+  defp invocation_ledger?(session) do
+    Enum.any?(session.operations, fn {_id, operation} ->
+      operation.kind in [:invoke, :child_start, :child_stop]
+    end)
+  end
+
+  defp reconcile_standard_children(state, session) do
+    session.operations
+    |> Map.values()
+    |> Enum.filter(fn operation ->
+      operation.kind == :invoke and operation.state in [:not_started, :result_unknown] and
+        operation.correlation["type"] == "scxml" and owned_child?(state, operation)
+    end)
+    |> Enum.reduce(state, fn operation, current ->
+      child = Map.fetch!(current.child_view, operation.target)
+      reconcile_standard_child(current, session, operation, child)
+    end)
+  end
+
+  defp reconcile_standard_child(state, session, operation, child) do
+    case Jido.AgentServer.plugin_state(child.pid, Plugin, state.options.rescan_timeout) do
+      {:ok, %{session: nil}} ->
+        case Agent.initialize(child.pid, state.options.rescan_timeout) do
+          {:ok, _agent} ->
+            state
+
+          {:error, _reason} ->
+            send_child_result(
+              state,
+              session,
+              operation,
+              "failed",
+              %{"reason" => "child_initialization_failed"}
+            )
+        end
+
+      {:ok, %{session: %Session{status: :completed} = child_session}} ->
+        send_child_result(state, session, operation, "done", child_session.completion_data)
+
+      {:ok, %{session: %Session{status: :stopped}}} ->
+        send_child_result(state, session, operation, "failed", %{"reason" => "child_stopped"})
+
+      _other ->
+        state
+    end
+  catch
+    :exit, _reason -> state
+  end
+
+  defp child_projection(state) do
+    children =
+      try do
+        Jido.AgentServer.children(state.agent_server, state.options.rescan_timeout)
+      catch
+        :exit, _reason -> %{}
+      end
+
+    children =
+      children
+      |> Enum.map(fn {_key, child} -> {Map.get(child, :tag), child} end)
+      |> Enum.reject(fn {tag, _child} -> is_nil(tag) end)
+      |> Map.new()
+
+    pending =
+      try do
+        state.agent_server
+        |> Jido.AgentServer.status(state.options.rescan_timeout)
+        |> get_in([:runtime, :pending_child_spawns])
+        |> case do
+          value when is_map(value) -> Map.keys(value) |> MapSet.new()
+          _other -> MapSet.new()
+        end
+      catch
+        :exit, _reason -> MapSet.new()
+      end
+
+    {children, pending}
+  end
+
+  defp owned_child?(%{child_view: children}, operation), do: owned_child?(children, operation)
+
+  defp owned_child?(_children, nil), do: false
+
+  defp owned_child?(children, operation) do
+    case Map.get(children, operation.target) do
+      child when is_map(child) -> Child.owned?(child, operation)
+      _other -> false
+    end
+  end
+
+  defp stop_desired?(session, invoke) do
+    Enum.any?(session.operations, fn
+      {_id, %{kind: :child_stop, correlation: correlation} = stop} ->
+        correlation["invoke_operation_id"] == invoke.id and
+          not Session.Operation.terminal?(stop)
+
+      _other ->
+        false
+    end)
+  end
+
+  defp send_child_result(state, session, operation, child_state, result) do
+    key = {operation.id, operation.generation, child_state, Diagnostic.digest(result)}
+    now = System.monotonic_time(:millisecond)
+    minimum_retry = max(state.options.rescan_interval * 2, 50)
+
+    case Map.get(state.child_results, operation.id) do
+      %{key: ^key, sent_at: sent_at} when now - sent_at < minimum_retry ->
+        state
+
+      _other ->
+        data = %{
+          "generation" => operation.generation,
+          "operation_id" => operation.id,
+          "result" => result,
+          "state" => child_state
+        }
+
+        signal =
+          Jido.Signal.new!(Agent.child_signal_type(), data,
+            id:
+              runtime_signal_id(
+                "child-#{child_state}",
+                operation.id,
+                operation.attempt_count,
+                data
+              ),
+            source: "/jido/statechart/runtime"
+          )
+
+        case reserve_turn(state) do
+          {:ok, state} ->
+            case sign(signal, operation.id, operation.generation, state, session.incarnation) do
+              {:ok, signal} ->
+                Jido.AgentServer.cast(state.agent_server, signal)
+
+                result_state = %{key: key, sent_at: now}
+                %{state | child_results: Map.put(state.child_results, operation.id, result_state)}
+
+              {:error, _reason} ->
+                state
+            end
+
+          {:error, state} ->
+            state
+        end
+    end
   end
 
   defp sync_timers(state, session, now) do
@@ -677,7 +1186,10 @@ defmodule Jido.Statechart.Plugin.Runtime do
               "cancel_replaced",
               "cancel_stale",
               "confirm_cancel",
-              "complete_cancel"
+              "complete_cancel",
+              "invoke",
+              "stop_invoke",
+              "emit_to_child"
             ]
 
         signal.type == Agent.delivery_signal_type() ->
@@ -689,6 +1201,10 @@ defmodule Jido.Statechart.Plugin.Runtime do
               "retryable_failure",
               "permanent_failure"
             ]
+
+        signal.type == Agent.child_signal_type() ->
+          runtime_coordinates?(signal, operation_id, generation) and
+            signal.data["state"] in ["started", "done", "stopped", "failed", "forwarded"]
 
         true ->
           false

@@ -3,6 +3,7 @@ defmodule Jido.Statechart.Semantics.Macrostep do
 
   alias Jido.Statechart.{DataModel, Diagnostic, Limits, Registry, Session}
   alias Jido.Statechart.Model.{Chart, Event}
+  alias Jido.Statechart.Runtime.Invocation
   alias Jido.Statechart.Semantics.{Configuration, History, Microstep, Selection, Trace}
 
   @fatal_data_codes [
@@ -349,6 +350,7 @@ defmodule Jido.Statechart.Semantics.Macrostep do
          internal_queue: session.internal_queue,
          logs: [],
          intents: [],
+         operations: session.operations,
          session_incarnation: session.incarnation,
          generated_id_counter: session.generated_id_counter,
          initialized_data_state_ids: session.initialized_data_state_ids,
@@ -468,11 +470,11 @@ defmodule Jido.Statechart.Semantics.Macrostep do
 
   defp plan_event(chart, workspace, event, options) do
     event_map = Event.dump(event)
+    workspace = put_event(workspace, event_map)
 
-    with {:ok, transitions, workspace} <-
+    with {:ok, workspace} <- Invocation.before_selection(chart, workspace, event, options),
+         {:ok, transitions, workspace} <-
            Selection.select(chart, workspace.configuration, event, workspace, options) do
-      workspace = put_event(workspace, event_map)
-
       case transitions do
         [] ->
           with {:ok, workspace} <- Trace.append(workspace, Trace.discarded(event_map), options) do

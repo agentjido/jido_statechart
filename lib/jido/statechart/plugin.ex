@@ -13,7 +13,8 @@ defmodule Jido.Statechart.Plugin do
   alias Jido.AgentServer.Plugin.Admission
   alias Jido.Statechart.Agent
   alias Jido.Statechart.Model.Event
-  alias Jido.Statechart.Plugin.{Commit, Persistence, Runtime}
+  alias Jido.Statechart.Plugin.{ChildControlAck, Commit, OwnedChildControl, Persistence, Runtime}
+  alias Jido.Statechart.Runtime.Invocation
   alias Jido.Statechart.{Diagnostic, Limits, Session}
 
   @state_format_version 1
@@ -33,7 +34,10 @@ defmodule Jido.Statechart.Plugin do
     :incarnation,
     :chart_fingerprint,
     :registry_digest,
-    :limits_digest
+    :limits_digest,
+    :invocation_ancestry,
+    :invocation_depth,
+    :invocation_remaining_descendants
   ]
   @immutable_operation_fields [
     :id,
@@ -60,7 +64,23 @@ defmodule Jido.Statechart.Plugin do
   end
 
   @impl Jido.Plugin
-  def directives(_opts), do: [Commit]
+  def directives(_opts), do: [Commit, ChildControlAck, OwnedChildControl]
+
+  @impl Jido.Plugin
+  def dispatch(runtime, %ChildControlAck{} = acknowledgement, context, _opts) do
+    Runtime.child_control_ack(runtime, acknowledgement, context.plugin_state)
+  end
+
+  def dispatch(_runtime, %Commit{}, _context, _opts), do: :ok
+
+  def dispatch(runtime, %OwnedChildControl{action: :emit} = control, context, opts) do
+    signal = Jido.Dispatch.Preparation.propagate(control.signal, context.effective_signal)
+    Runtime.owned_child_control(runtime, %{control | signal: signal}, opts)
+  end
+
+  def dispatch(runtime, %OwnedChildControl{} = control, _context, opts) do
+    Runtime.owned_child_control(runtime, control, opts)
+  end
 
   @impl Jido.Plugin
   def validate_options(opts) do
@@ -188,12 +208,22 @@ defmodule Jido.Statechart.Plugin do
     Enum.all?(records, fn record -> cleanup_record_complete?(record, records) end)
   end
 
-  defp cleanup_record_complete?(%{kind: :child_start, state: :canceled}, _records), do: true
-
   defp cleanup_record_complete?(
-         %{kind: :child_start, state: :confirmed_complete} = start,
+         %{kind: kind, state: state} = start,
          records
-       ) do
+       )
+       when kind in [:invoke, :child_start] and
+              state in [:confirmed_complete, :permanent_failure, :canceled],
+       do: proven_absent?(start) or correlated_stop_proof?(start, records)
+
+  defp cleanup_record_complete?(%{kind: kind}, _records)
+       when kind in [:invoke, :child_start],
+       do: false
+
+  defp cleanup_record_complete?(%{state: state}, _records),
+    do: state in [:confirmed_complete, :canceled]
+
+  defp correlated_stop_proof?(start, records) do
     Enum.any?(records, fn
       %{kind: :child_stop, target: target, generation: generation, state: state} ->
         target == start.target and generation >= start.generation and
@@ -204,10 +234,28 @@ defmodule Jido.Statechart.Plugin do
     end)
   end
 
-  defp cleanup_record_complete?(%{kind: :child_start}, _records), do: false
+  defp proven_absent?(%{state: :permanent_failure, result: %{"value" => result}}),
+    do: not Invocation.child_may_exist?(result)
 
-  defp cleanup_record_complete?(%{state: state}, _records),
-    do: state in [:confirmed_complete, :canceled]
+  defp proven_absent?(%{state: :permanent_failure, outcome_digest: digest}) do
+    Enum.any?(proven_absent_reasons(), fn reason ->
+      Diagnostic.digest(%{
+        "state" => :permanent_failure,
+        "result" => %{"outcome" => "failed", "value" => %{"reason" => reason}}
+      }) == digest
+    end)
+  end
+
+  defp proven_absent?(_record), do: false
+
+  defp proven_absent_reasons,
+    do: [
+      "child_start_failed",
+      "child_not_found",
+      "child_exit",
+      "child_stopped",
+      "child_ownership_conflict"
+    ]
 
   @doc false
   def session_id(agent_id) when is_binary(agent_id),
@@ -225,7 +273,7 @@ defmodule Jido.Statechart.Plugin do
 
     cond do
       signal.type == Agent.initialization_signal_type() and is_nil(session) ->
-        with {:ok, session} <- new_session(preparation.agent_id, signal.id, config) do
+        with {:ok, session} <- new_session(preparation.agent_id, signal.id, signal.data, config) do
           {:ok,
            %{
              kind: :macrostep,
@@ -253,10 +301,16 @@ defmodule Jido.Statechart.Plugin do
          }}
 
       signal.type == Agent.reconciliation_signal_type() and match?(%Session{}, session) ->
-        prepare_reconciliation(signal, session)
+        prepare_reconciliation(signal, session, config)
 
       signal.type == Agent.delivery_signal_type() and match?(%Session{}, session) ->
         prepare_runtime_result(signal, session, config)
+
+      signal.type == Agent.child_signal_type() and match?(%Session{}, session) ->
+        prepare_child_result(signal, session, config)
+
+      signal.type in Agent.child_lifecycle_signal_types() ->
+        {:ok, %{kind: :child_lifecycle}}
 
       Agent.reserved_signal?(signal.type) ->
         {:ok, %{kind: :reserved_rejection, reason: :unsupported_statechart_runtime_signal}}
@@ -329,23 +383,29 @@ defmodule Jido.Statechart.Plugin do
   defp runtime_delivery?(signal),
     do: not is_nil(Jido.Signal.get_context(signal, "jidoscop"))
 
-  defp new_session(agent_id, signal_id, config) do
+  defp new_session(agent_id, signal_id, initialization_context, config) do
     versions = Session.contract_versions()
+    fingerprint = config.chart.chart().fingerprint
 
     Session.new(
       Map.merge(versions, %{
         id: session_id(agent_id),
         incarnation: incarnation(agent_id, signal_id),
-        chart_fingerprint: config.chart.chart().fingerprint,
+        chart_fingerprint: fingerprint,
         registry_version: config.chart.registry().version,
         registry_digest: config.chart.registry().digest,
         limits_digest: Limits.digest(config.limits),
+        invocation_ancestry:
+          Map.get(initialization_context, "invocation_ancestry", [fingerprint]),
+        invocation_depth: Map.get(initialization_context, "invocation_depth", 0),
+        invocation_remaining_descendants:
+          Map.get(initialization_context, "invocation_remaining_descendants"),
         status: :new
       })
     )
   end
 
-  defp prepare_reconciliation(signal, session) do
+  defp prepare_reconciliation(signal, session, config) do
     data = signal.data
     operation_id = value(data, "operation_id")
     generation = value(data, "generation")
@@ -388,6 +448,46 @@ defmodule Jido.Statechart.Plugin do
              signal_id: signal.id
            }}
 
+        "invoke" ->
+          {:ok,
+           %{
+             kind: :runtime_invoke,
+             operation: :invoke,
+             session: session,
+             operation_id: operation_id,
+             generation: generation,
+             registry: config.chart.registry(),
+             retry_backoff_ms: config.retry_backoff_ms,
+             expected_revision: session.revision,
+             signal_id: signal.id
+           }}
+
+        "stop_invoke" ->
+          {:ok,
+           %{
+             kind: :runtime_stop_invoke,
+             operation: :stop_invoke,
+             session: session,
+             operation_id: operation_id,
+             generation: generation,
+             retry_backoff_ms: config.retry_backoff_ms,
+             expected_revision: session.revision,
+             signal_id: signal.id
+           }}
+
+        "emit_to_child" ->
+          {:ok,
+           %{
+             kind: :runtime_invoke_forward,
+             operation: :invoke,
+             session: session,
+             operation_id: operation_id,
+             generation: generation,
+             retry_backoff_ms: config.retry_backoff_ms,
+             expected_revision: session.revision,
+             signal_id: signal.id
+           }}
+
         _other ->
           {:ok, %{kind: :reserved_rejection, reason: :invalid_runtime_reconciliation}}
       end
@@ -420,6 +520,34 @@ defmodule Jido.Statechart.Plugin do
        }}
     else
       _other -> {:ok, %{kind: :reserved_rejection, reason: :invalid_runtime_result}}
+    end
+  end
+
+  defp prepare_child_result(signal, session, config) do
+    data = signal.data
+    operation_id = value(data, "operation_id")
+    generation = value(data, "generation")
+
+    with %Session.Operation{generation: ^generation} <-
+           Map.get(session.operations, operation_id),
+         state when state in ["started", "done", "stopped", "failed", "forwarded"] <-
+           value(data, "state") do
+      {:ok,
+       %{
+         kind: :child_result,
+         operation: :child_result,
+         session: session,
+         operation_id: operation_id,
+         generation: generation,
+         child_state: state,
+         result: value(data, "result"),
+         chart: config.chart,
+         limits: config.limits,
+         expected_revision: session.revision,
+         signal_id: signal.id
+       }}
+    else
+      _other -> {:ok, %{kind: :reserved_rejection, reason: :invalid_child_result}}
     end
   end
 
@@ -515,6 +643,10 @@ defmodule Jido.Statechart.Plugin do
   defp valid_prepared_kind?(%{kind: :runtime_schedule}, :schedule), do: true
   defp valid_prepared_kind?(%{kind: :runtime_cancel}, :cancel), do: true
   defp valid_prepared_kind?(%{kind: :runtime_result}, :runtime_result), do: true
+  defp valid_prepared_kind?(%{kind: :runtime_invoke}, :invoke), do: true
+  defp valid_prepared_kind?(%{kind: :runtime_invoke_forward}, :invoke), do: true
+  defp valid_prepared_kind?(%{kind: :runtime_stop_invoke}, :stop_invoke), do: true
+  defp valid_prepared_kind?(%{kind: :child_result}, :child_result), do: true
   defp valid_prepared_kind?(_prepared, _operation), do: false
 
   defp valid_signal_operation?(type, :initialize), do: type == Agent.initialization_signal_type()
@@ -525,6 +657,11 @@ defmodule Jido.Statechart.Plugin do
 
   defp valid_signal_operation?(type, :runtime_result),
     do: type == Agent.delivery_signal_type()
+
+  defp valid_signal_operation?(type, operation) when operation in [:invoke, :stop_invoke],
+    do: type == Agent.reconciliation_signal_type()
+
+  defp valid_signal_operation?(type, :child_result), do: type == Agent.child_signal_type()
 
   defp valid_signal_operation?(type, :run), do: not Agent.reserved_signal?(type)
 
@@ -554,7 +691,7 @@ defmodule Jido.Statechart.Plugin do
          operation
        )
        when status in [:active, :completed, :cleaning] and
-              operation in [:schedule, :cancel],
+              operation in [:schedule, :cancel, :invoke, :stop_invoke],
        do: true
 
   defp valid_status_transition?(
@@ -563,6 +700,11 @@ defmodule Jido.Statechart.Plugin do
          :runtime_result
        )
        when status in [:completed, :cleaning],
+       do: true
+
+  defp valid_status_transition?(%Session{status: status}, %Session{status: next}, :child_result)
+       when status in [:active, :completed, :cleaning] and
+              next in [:active, :completed, :cleaning],
        do: true
 
   defp valid_status_transition?(_current, _next, _operation), do: false
@@ -595,6 +737,9 @@ defmodule Jido.Statechart.Plugin do
 
       next.generated_id_counter < source.generated_id_counter ->
         {:error, :statechart_generated_id_counter_regression}
+
+      next.invocation_descendants_used < source.invocation_descendants_used ->
+        {:error, :statechart_invocation_descendant_budget_regression}
 
       generation_high_water_regressed?(source.operation_high_water, next.operation_high_water) ->
         {:error, :statechart_operation_high_water_regression}

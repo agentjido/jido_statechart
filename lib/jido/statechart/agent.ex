@@ -15,6 +15,11 @@ defmodule Jido.Statechart.Agent do
   @delivery_signal "jido.statechart.delivery"
   @child_signal "jido.statechart.child"
   @reconciliation_signal "jido.statechart.reconcile"
+  @child_lifecycle_signals [
+    "jido.agent.child.started",
+    "jido.agent.child.exit",
+    "jido.agent.orphaned"
+  ]
   @reserved_signals [
     @initialization_signal,
     @cleanup_signal,
@@ -48,7 +53,13 @@ defmodule Jido.Statechart.Agent do
   def delivery_signal_type, do: @delivery_signal
 
   @doc false
+  def child_signal_type, do: @child_signal
+
+  @doc false
   def reconciliation_signal_type, do: @reconciliation_signal
+
+  @doc false
+  def child_lifecycle_signal_types, do: @child_lifecycle_signals
 
   @doc "Returns the closed set of runtime-owned Signal types."
   @spec reserved_signal_types() :: [String.t()]

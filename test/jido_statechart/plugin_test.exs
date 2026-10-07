@@ -509,8 +509,18 @@ defmodule Jido.Statechart.PluginTest do
     assert_frozen_session(state, migrated["session"], :completed)
   end
 
-  test "the frozen current checkpoint loads without migration changes" do
+  test "the frozen version-four checkpoint adds invocation context" do
     fixture = checkpoint_fixture(4)
+
+    assert {:ok, migrated} = Plugin.migrate(fixture, @options)
+    assert migrated["checkpoint_version"] == Plugin.checkpoint_version()
+    assert migrated["session"]["invocation_depth"] == 0
+    assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
+    assert_frozen_session(state, migrated["session"], :completed)
+  end
+
+  test "the frozen current checkpoint loads without migration changes" do
+    fixture = checkpoint_fixture(5)
 
     assert {:ok, ^fixture} = Plugin.migrate(fixture, @options)
     assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
@@ -518,8 +528,8 @@ defmodule Jido.Statechart.PluginTest do
   end
 
   test "current and legacy checkpoints explicitly preserve an empty session" do
-    current = checkpoint_fixture(4) |> Map.put("session", nil)
-    legacy = checkpoint_fixture(3) |> Map.put("session", nil)
+    current = checkpoint_fixture(5) |> Map.put("session", nil)
+    legacy = checkpoint_fixture(4) |> Map.put("session", nil)
 
     assert {:ok, %{session: nil}} = Plugin.load(current, context(:load), @options)
     assert {:ok, migrated} = Plugin.migrate(legacy, @options)
@@ -662,6 +672,92 @@ defmodule Jido.Statechart.PluginTest do
              | operations: %{},
                operation_tombstones: %{tombstone.id => tombstone},
                operation_counter: 2
+           })
+
+    failed_invoke =
+      operation(
+        :invoke,
+        :permanent_failure,
+        operation_state_options(:permanent_failure) ++
+          [generation: 3, target: "failed-child"]
+      )
+
+    failed_forward =
+      operation(
+        :child_start,
+        :permanent_failure,
+        operation_state_options(:permanent_failure) ++
+          [generation: 4, target: "failed-child"]
+      )
+
+    proven_absent_start =
+      operation(
+        :invoke,
+        :permanent_failure,
+        operation_state_options(:permanent_failure) ++
+          [
+            generation: 6,
+            target: "never-created-child",
+            result: %{
+              "outcome" => "failed",
+              "value" => %{"reason" => "child_start_failed"}
+            }
+          ]
+      )
+
+    proven_absent_stop =
+      operation(:child_stop, :confirmed_complete,
+        generation: 5,
+        target: "failed-child",
+        attempt_count: 1,
+        result_revision: 0,
+        result: %{"outcome" => "stopped"},
+        retention_class: :terminal
+      )
+
+    assert Plugin.cleanup_complete?(%{
+             base
+             | operations: %{
+                 failed_invoke.id => failed_invoke,
+                 failed_forward.id => failed_forward,
+                 proven_absent_stop.id => proven_absent_stop
+               },
+               operation_counter: 6
+           })
+
+    assert Plugin.cleanup_complete?(%{
+             base
+             | operations: %{proven_absent_start.id => proven_absent_start},
+               operation_counter: 7
+           })
+
+    absent_tombstone = Tombstone.from_operation(proven_absent_start)
+
+    assert Plugin.cleanup_complete?(%{
+             base
+             | operation_tombstones: %{absent_tombstone.id => absent_tombstone},
+               operation_counter: 7
+           })
+
+    refute Plugin.cleanup_complete?(%{
+             base
+             | operations: %{
+                 failed_invoke.id => failed_invoke,
+                 failed_forward.id => failed_forward
+               },
+               operation_counter: 5
+           })
+
+    uncertain_stop = %{proven_absent_stop | state: :result_unknown, retention_class: :active}
+
+    refute Plugin.cleanup_complete?(%{
+             base
+             | operations: %{
+                 failed_invoke.id => failed_invoke,
+                 failed_forward.id => failed_forward,
+                 uncertain_stop.id => uncertain_stop
+               },
+               operation_counter: 6
            })
   end
 

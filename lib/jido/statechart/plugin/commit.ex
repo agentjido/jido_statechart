@@ -13,7 +13,16 @@ defmodule Jido.Statechart.Plugin.Commit do
           session: Session.t(),
           expected_revision: non_neg_integer() | nil,
           signal_id: String.t(),
-          operation: :initialize | :run | :cleanup | :schedule | :cancel | :runtime_result,
+          operation:
+            :initialize
+            | :run
+            | :cleanup
+            | :schedule
+            | :cancel
+            | :runtime_result
+            | :invoke
+            | :stop_invoke
+            | :child_result,
           intents: [Operation.t()]
         }
 
@@ -34,7 +43,10 @@ defmodule Jido.Statechart.Plugin.Commit do
              :cleanup,
              :schedule,
              :cancel,
-             :runtime_result
+             :runtime_result,
+             :invoke,
+             :stop_invoke,
+             :child_result
            ] do
       {:ok, %{directive | session: session, intents: intents}}
     else

@@ -71,6 +71,22 @@ defmodule Jido.Statechart.Agent.Route.Reserved do
   end
 end
 
+defmodule Jido.Statechart.Agent.Route.ChildLifecycle do
+  @moduledoc false
+  use Jido.Action, name: "statechart_agent_child_lifecycle"
+
+  alias Jido.Plugin.Input
+  alias Jido.Statechart.Plugin
+
+  @impl true
+  def run(_params, context) do
+    case get_in(context, [:plugin_inputs, Plugin]) do
+      %Input{prepared: %{kind: :child_lifecycle}} -> {:ok, context.agent_state, []}
+      _other -> {:error, :invalid_statechart_child_lifecycle_input}
+    end
+  end
+end
+
 defmodule Jido.Statechart.Agent.Route.Prepare do
   @moduledoc false
   use Jido.Action, name: "statechart_agent_route_prepare"

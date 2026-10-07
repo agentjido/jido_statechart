@@ -3,6 +3,7 @@ defmodule Jido.Statechart.Semantics.Microstep do
 
   alias Jido.Statechart.{DataModel, Diagnostic, ExecutableContent}
   alias Jido.Statechart.Model.{Chart, Executable, Transition}
+  alias Jido.Statechart.Runtime.Invocation
   alias Jido.Statechart.Semantics.{Completion, Configuration, Domain, EntryExit, History}
 
   @fatal_data_codes [
@@ -112,7 +113,13 @@ defmodule Jido.Statechart.Semantics.Microstep do
 
       case run_content(state.on_exit, current, options) do
         {:ok, next} ->
-          {:cont, {:ok, %{next | active_state_ids: List.delete(next.active_state_ids, id)}}}
+          case Invocation.exit(chart, id, next, options) do
+            {:ok, next} ->
+              {:cont, {:ok, %{next | active_state_ids: List.delete(next.active_state_ids, id)}}}
+
+            {:error, _diagnostic} = error ->
+              {:halt, error}
+          end
 
         {:error, _diagnostic} = error ->
           {:halt, error}
@@ -143,7 +150,8 @@ defmodule Jido.Statechart.Semantics.Microstep do
            {:ok, current} <- run_content(state.on_entry, current, options),
            {:ok, current} <- initial_content(chart, state, plan, current, options),
            {:ok, current} <- history_content(state, plan, current, options),
-           {:ok, current} <- Completion.entered_final(chart, state, current, options) do
+           {:ok, current} <- Completion.entered_final(chart, state, current, options),
+           {:ok, current} <- Invocation.enter(chart, id, current, options) do
         {:cont, {:ok, current}}
       else
         {:error, _diagnostic} = error -> {:halt, error}

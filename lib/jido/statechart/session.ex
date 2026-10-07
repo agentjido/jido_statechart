@@ -9,8 +9,8 @@ defmodule Jido.Statechart.Session do
 
   alias Jido.Statechart.{Diagnostic, Limits, Profile, Registry}
 
-  @schema_version 2
-  @runtime_protocol_version 2
+  @schema_version 3
+  @runtime_protocol_version 3
   @data_model_version "1"
   @limits_version "1"
   @generated_id_prefix "__jido_scxml_generated_"
@@ -30,6 +30,10 @@ defmodule Jido.Statechart.Session do
               :chart_fingerprint,
               :registry_digest,
               :limits_digest,
+              :invocation_ancestry,
+              :invocation_depth,
+              :invocation_remaining_descendants,
+              :invocation_descendants_used,
               :status,
               :revision,
               :revision_fence,
@@ -727,6 +731,10 @@ defmodule Jido.Statechart.Session do
             chart_fingerprint: nil,
             registry_digest: nil,
             limits_digest: nil,
+            invocation_ancestry: [],
+            invocation_depth: 0,
+            invocation_remaining_descendants: nil,
+            invocation_descendants_used: 0,
             status: :new,
             revision: 0,
             revision_fence: 0,
@@ -782,6 +790,26 @@ defmodule Jido.Statechart.Session do
          {:ok, chart_fingerprint} <- digest(attrs, :chart_fingerprint),
          {:ok, registry_digest} <- digest(attrs, :registry_digest),
          {:ok, limits_digest} <- digest(attrs, :limits_digest),
+         :ok <- required_stored_field(attrs, :invocation_ancestry, strict?),
+         {:ok, invocation_ancestry} <-
+           invocation_ancestry(
+             Diagnostic.fetch(attrs, :invocation_ancestry, [chart_fingerprint]),
+             chart_fingerprint
+           ),
+         :ok <- required_stored_field(attrs, :invocation_depth, strict?),
+         {:ok, invocation_depth} <-
+           invocation_depth(
+             Diagnostic.fetch(attrs, :invocation_depth, length(invocation_ancestry) - 1),
+             invocation_ancestry
+           ),
+         :ok <- required_stored_field(attrs, :invocation_remaining_descendants, strict?),
+         {:ok, invocation_remaining_descendants} <-
+           invocation_remaining_descendants(
+             Diagnostic.fetch(attrs, :invocation_remaining_descendants)
+           ),
+         :ok <- required_stored_field(attrs, :invocation_descendants_used, strict?),
+         {:ok, invocation_descendants_used} <-
+           nonnegative(attrs, :invocation_descendants_used, 0),
          {:ok, status} <- status(Diagnostic.fetch(attrs, :status, :new)),
          {:ok, revision} <- nonnegative(attrs, :revision, 0),
          {:ok, revision_fence} <- nonnegative(attrs, :revision_fence, 0),
@@ -836,6 +864,10 @@ defmodule Jido.Statechart.Session do
            chart_fingerprint: chart_fingerprint,
            registry_digest: registry_digest,
            limits_digest: limits_digest,
+           invocation_ancestry: invocation_ancestry,
+           invocation_depth: invocation_depth,
+           invocation_remaining_descendants: invocation_remaining_descendants,
+           invocation_descendants_used: invocation_descendants_used,
            status: status,
            revision: revision,
            revision_fence: revision_fence,
@@ -907,6 +939,27 @@ defmodule Jido.Statechart.Session do
       Enum.count(session.operations, fn {_id, operation} -> Operation.terminal?(operation) end)
 
     with :ok <-
+           maximum(
+             session.invocation_depth,
+             limits.invocation_depth,
+             :invocation_depth_exceeded,
+             "Invocation depth limit was reached"
+           ),
+         :ok <-
+           maximum(
+             session.invocation_remaining_descendants || limits.total_descendants,
+             limits.total_descendants,
+             :invocation_descendant_limit_exceeded,
+             "Invocation descendant budget exceeds its limit"
+           ),
+         :ok <-
+           maximum(
+             session.invocation_descendants_used,
+             session.invocation_remaining_descendants || limits.total_descendants,
+             :invocation_descendant_limit_exceeded,
+             "Invocation descendant budget was exhausted"
+           ),
+         :ok <-
            maximum(
              length(session.internal_queue),
              limits.internal_queue_events,
@@ -1346,6 +1399,44 @@ defmodule Jido.Statechart.Session do
          path: [:session, field]
        )}
     end
+  end
+
+  defp invocation_ancestry(values, chart_fingerprint) when is_list(values) and values != [] do
+    valid? =
+      Enum.all?(values, fn value ->
+        is_binary(value) and Regex.match?(~r/^[0-9a-f]{64}$/u, value)
+      end)
+
+    if valid? and Enum.uniq(values) == values and List.last(values) == chart_fingerprint do
+      {:ok, values}
+    else
+      invalid_invocation_context(:invocation_ancestry)
+    end
+  end
+
+  defp invocation_ancestry(_values, _chart_fingerprint),
+    do: invalid_invocation_context(:invocation_ancestry)
+
+  defp invocation_depth(value, ancestry)
+       when is_integer(value) and value >= 0 and value == length(ancestry) - 1,
+       do: {:ok, value}
+
+  defp invocation_depth(_value, _ancestry),
+    do: invalid_invocation_context(:invocation_depth)
+
+  defp invocation_remaining_descendants(nil), do: {:ok, nil}
+
+  defp invocation_remaining_descendants(value) when is_integer(value) and value >= 0,
+    do: {:ok, value}
+
+  defp invocation_remaining_descendants(_value),
+    do: invalid_invocation_context(:invocation_remaining_descendants)
+
+  defp invalid_invocation_context(field) do
+    {:error,
+     Diagnostic.new(:invalid_invocation_context, "Session invocation context is invalid",
+       path: [:session, field]
+     )}
   end
 
   defp history(value) when is_map(value) and not is_struct(value) do
