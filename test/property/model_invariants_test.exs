@@ -20,6 +20,7 @@ defmodule Jido.Statechart.ModelInvariantsTest do
                  2
                )
 
+      assert completed.revision_fence == 2
       assert {:ok, restored} = completed |> Session.dump() |> Session.load()
 
       final =
@@ -163,6 +164,8 @@ defmodule Jido.Statechart.ModelInvariantsTest do
   end
 
   defp session_fixture(operation) do
+    revision_fence = max(operation.created_revision, operation.result_revision || 0)
+
     Session.new!(%{
       id: "session-1",
       incarnation: "incarnation-1",
@@ -170,6 +173,8 @@ defmodule Jido.Statechart.ModelInvariantsTest do
       registry_digest: String.duplicate("b", 64),
       limits_digest: Limits.digest(Limits.default()),
       registry_version: "registry-1",
+      revision_fence: revision_fence,
+      operation_counter: operation.generation + 1,
       operations: %{operation.id => operation}
     })
   end

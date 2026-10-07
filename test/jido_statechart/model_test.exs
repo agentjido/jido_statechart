@@ -281,6 +281,9 @@ defmodule Jido.Statechart.ModelTest do
         registry_digest: String.duplicate("b", 64),
         limits_digest: Limits.digest(Limits.default()),
         registry_version: "registry-1",
+        revision: 1,
+        revision_fence: 1,
+        operation_counter: 2,
         configuration: ["left"],
         operations: %{operation.id => operation},
         trace: [%{"event" => "job.start", "payload" => %{"secret" => true}}]

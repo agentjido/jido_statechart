@@ -601,6 +601,18 @@ defmodule Jido.Statechart.Session do
 
   @type t :: %__MODULE__{}
 
+  @doc "Returns the execution-contract versions stored with every session."
+  @spec contract_versions() :: map()
+  def contract_versions do
+    %{
+      schema_version: @schema_version,
+      runtime_protocol_version: @runtime_protocol_version,
+      profile_version: Profile.version(),
+      data_model_version: @data_model_version,
+      limits_version: @limits_version
+    }
+  end
+
   @doc "Builds and validates a portable session."
   @spec new(map()) :: {:ok, t()} | {:error, Diagnostic.t()}
   def new(%__MODULE__{} = session), do: session |> Map.from_struct() |> parse(false)
@@ -648,6 +660,14 @@ defmodule Jido.Statechart.Session do
          {:ok, tombstones} <- tombstones(Diagnostic.fetch(attrs, :operation_tombstones, %{})),
          :ok <- disjoint_operations(operations, tombstones),
          :ok <- operation_incarnations(operations, tombstones, incarnation),
+         :ok <-
+           ledger_fences(
+             revision,
+             revision_fence,
+             operation_counter,
+             operations,
+             tombstones
+           ),
          {:ok, completion_data} <-
            portable(Diagnostic.fetch(attrs, :completion_data), :completion_data),
          {:ok, trace} <- portable_list(Diagnostic.fetch(attrs, :trace, []), :trace),
@@ -718,6 +738,84 @@ defmodule Jido.Statechart.Session do
   def validate_contract(%__MODULE__{} = session, %Registry{} = registry, %Limits{} = limits) do
     with {:ok, limits} <- Limits.new(Map.from_struct(limits)) do
       validate_contract_values(session, registry, limits)
+    end
+  end
+
+  @doc "Validates all committed session resource limits."
+  @spec validate_limits(t(), Limits.t()) :: :ok | {:error, Diagnostic.t()}
+  def validate_limits(%__MODULE__{} = session, %Limits{} = limits) do
+    pending = Enum.reject(Map.values(session.operations), &Operation.terminal?/1)
+
+    terminal =
+      Enum.count(session.operations, fn {_id, operation} -> Operation.terminal?(operation) end)
+
+    with :ok <-
+           maximum(
+             length(session.internal_queue),
+             limits.internal_queue_events,
+             :internal_queue_limit_exceeded,
+             "Internal event queue limit was reached"
+           ),
+         :ok <-
+           maximum(
+             length(session.trace),
+             limits.trace_entries,
+             :trace_limit_exceeded,
+             "Trace entry limit was reached"
+           ),
+         :ok <-
+           maximum(
+             count_kinds(pending, [:send, :cancel]),
+             limits.pending_sends,
+             :pending_send_limit_exceeded,
+             "Pending send limit was reached"
+           ),
+         :ok <-
+           maximum(
+             count_kinds(pending, [:timer]),
+             limits.pending_timers,
+             :pending_timer_limit_exceeded,
+             "Pending timer limit was reached"
+           ),
+         :ok <-
+           maximum(
+             count_kinds(pending, [:invoke, :child_start, :child_stop]),
+             limits.pending_invocations,
+             :pending_invocation_limit_exceeded,
+             "Pending invocation limit was reached"
+           ),
+         :ok <-
+           maximum(
+             terminal + map_size(session.operation_tombstones),
+             limits.terminal_records,
+             :terminal_record_limit_exceeded,
+             "Terminal operation record limit was reached"
+           ),
+         :ok <- session_size(session, limits.session_bytes) do
+      :ok
+    end
+  end
+
+  defp count_kinds(operations, kinds), do: Enum.count(operations, &(&1.kind in kinds))
+
+  defp maximum(actual, maximum, _code, _message) when actual <= maximum, do: :ok
+
+  defp maximum(actual, maximum, code, message) do
+    {:error,
+     Diagnostic.new(code, message, correction: %{"actual" => actual, "maximum" => maximum})}
+  end
+
+  defp session_size(session, maximum) do
+    bytes = session |> dump() |> :erlang.term_to_binary([:deterministic]) |> byte_size()
+
+    if bytes <= maximum do
+      :ok
+    else
+      {:error,
+       Diagnostic.new(:session_size_limit_exceeded, "Session exceeds the configured byte limit",
+         path: [:session],
+         correction: %{"actual_bytes" => bytes, "maximum_bytes" => maximum}
+       )}
     end
   end
 
@@ -872,8 +970,12 @@ defmodule Jido.Statechart.Session do
             retention_class: retention_class
         }
 
-        {:ok, %{session | operations: Map.put(session.operations, operation.id, updated)},
-         :applied}
+        {:ok,
+         %{
+           session
+           | operations: Map.put(session.operations, operation.id, updated),
+             revision_fence: max(session.revision_fence, revision)
+         }, :applied}
     end
   end
 
@@ -1133,6 +1235,47 @@ defmodule Jido.Statechart.Session do
            "operation belongs to another session incarnation",
            path: [:session, :operations, value.id]
          )}
+    end
+  end
+
+  defp ledger_fences(revision, revision_fence, operation_counter, operations, tombstones) do
+    cond do
+      revision_fence < revision ->
+        {:error,
+         Diagnostic.new(
+           :invalid_revision_fence,
+           "Session revision fence must include the current revision",
+           path: [:session, :revision_fence]
+         )}
+
+      operation =
+          Enum.find(Map.values(operations), fn operation ->
+            operation.generation >= operation_counter or
+              operation.created_revision > revision_fence or
+                (is_integer(operation.result_revision) and
+                   operation.result_revision > revision_fence)
+          end) ->
+        {:error,
+         Diagnostic.new(
+           :invalid_operation_fence,
+           "Operation generation or revision exceeds its session fence",
+           path: [:session, :operations, operation.id]
+         )}
+
+      tombstone =
+          Enum.find(Map.values(tombstones), fn tombstone ->
+            tombstone.generation >= operation_counter or
+                tombstone.result_revision > revision_fence
+          end) ->
+        {:error,
+         Diagnostic.new(
+           :invalid_operation_fence,
+           "Operation tombstone exceeds its session fence",
+           path: [:session, :operation_tombstones, tombstone.id]
+         )}
+
+      true ->
+        :ok
     end
   end
 

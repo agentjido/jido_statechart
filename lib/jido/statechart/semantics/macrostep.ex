@@ -529,6 +529,8 @@ defmodule Jido.Statechart.Semantics.Macrostep do
     session = %{
       original
       | status: workspace.status,
+        revision: original.revision + 1,
+        revision_fence: max(original.revision_fence, original.revision + 1),
         generated_id_counter: workspace.generated_id_counter,
         initialized_data_state_ids: workspace.initialized_data_state_ids,
         configuration: workspace.configuration,

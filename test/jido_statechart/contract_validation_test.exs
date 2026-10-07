@@ -335,6 +335,8 @@ defmodule Jido.Statechart.ContractValidationTest do
 
     session =
       session_fixture(%{
+        revision_fence: 3,
+        operation_counter: 5,
         operations: Map.new([active, terminal_2, terminal_3, audit], &{&1.id, &1})
       })
 
@@ -376,7 +378,12 @@ defmodule Jido.Statechart.ContractValidationTest do
         })
       )
 
-    session = session_fixture(%{operations: %{operation.id => operation}})
+    session =
+      session_fixture(%{
+        revision_fence: 10,
+        operation_counter: operation.generation + 1,
+        operations: %{operation.id => operation}
+      })
 
     for revision <- [9, 10] do
       assert {:ok, ^session, :stale} =
