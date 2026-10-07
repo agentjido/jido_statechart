@@ -61,6 +61,20 @@ defmodule Jido.Statechart.Model.Event do
   @spec new!(map()) :: t()
   def new!(attrs), do: attrs |> new() |> Diagnostic.unwrap!()
 
+  @doc false
+  @spec new_external(map()) :: {:ok, t()} | {:error, Diagnostic.t()}
+  def new_external(%__MODULE__{} = event), do: event |> Map.from_struct() |> new_external()
+
+  def new_external(attrs) when is_map(attrs) do
+    with {:ok, event} <- new(attrs),
+         :ok <- external_class(event.class) do
+      {:ok, event}
+    end
+  end
+
+  def new_external(_attrs),
+    do: {:error, Diagnostic.new(:invalid_event, "external event must be a map", path: [:event])}
+
   @spec dump(t()) :: map()
   def dump(%__MODULE__{} = event) do
     event
@@ -86,6 +100,15 @@ defmodule Jido.Statechart.Model.Event do
     do:
       {:error,
        Diagnostic.new(:invalid_event_class, "event class is not supported",
+         path: [:event, :class]
+       )}
+
+  defp external_class(:external), do: :ok
+
+  defp external_class(_class),
+    do:
+      {:error,
+       Diagnostic.new(:invalid_external_event_class, "public event class must be external",
          path: [:event, :class]
        )}
 

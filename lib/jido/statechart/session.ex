@@ -34,6 +34,7 @@ defmodule Jido.Statechart.Session do
               :revision,
               :revision_fence,
               :generated_id_counter,
+              :operation_counter,
               :initialized_data_state_ids,
               :configuration,
               :history,
@@ -587,6 +588,7 @@ defmodule Jido.Statechart.Session do
             revision: 0,
             revision_fence: 0,
             generated_id_counter: 0,
+            operation_counter: 0,
             initialized_data_state_ids: [],
             configuration: [],
             history: %{},
@@ -628,6 +630,8 @@ defmodule Jido.Statechart.Session do
          {:ok, revision_fence} <- nonnegative(attrs, :revision_fence, 0),
          :ok <- required_counter(attrs, :generated_id_counter, strict?),
          {:ok, generated_id_counter} <- nonnegative(attrs, :generated_id_counter, 0),
+         :ok <- required_counter(attrs, :operation_counter, strict?),
+         {:ok, operation_counter} <- nonnegative(attrs, :operation_counter, 0),
          :ok <- required_ids(attrs, :initialized_data_state_ids, strict?),
          {:ok, initialized_data_state_ids} <-
            ids(
@@ -661,6 +665,7 @@ defmodule Jido.Statechart.Session do
            revision: revision,
            revision_fence: revision_fence,
            generated_id_counter: generated_id_counter,
+           operation_counter: operation_counter,
            initialized_data_state_ids: initialized_data_state_ids,
            configuration: configuration,
            history: history,

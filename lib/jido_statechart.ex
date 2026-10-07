@@ -7,12 +7,50 @@ defmodule Jido.Statechart do
   values that those entry points use.
   """
 
-  alias Jido.Statechart.{Profile, Session}
+  alias Jido.Statechart.{Diagnostic, Flow, Profile, Registry, Session}
   alias Jido.Statechart.Model.Chart
 
   @doc "Returns the machine-readable Jido SCXML capability manifest."
   @spec capabilities() :: map()
   def capabilities, do: Profile.manifest()
+
+  @doc "Initializes one new session through the canonical Statechart Flow."
+  @spec initialize(Chart.t(), Session.t(), Registry.t() | keyword()) :: Jido.Exec.exec_result()
+  def initialize(%Chart{} = chart, %Session{} = session, %Registry{} = registry),
+    do: Flow.initialize(chart, session, registry)
+
+  def initialize(%Chart{} = chart, %Session{} = session, options) do
+    with :ok <- validate_root_options(options),
+         %Registry{} = registry <- Keyword.get(options, :registry) do
+      Flow.initialize(chart, session, registry, Keyword.delete(options, :registry))
+    else
+      {:error, _diagnostic} = error -> error
+      _other -> {:error, Diagnostic.new(:invalid_registry, "A trusted Registry is required")}
+    end
+  end
+
+  @doc "Runs one external event through the canonical Statechart Flow."
+  @spec step(Chart.t(), Session.t(), map(), Registry.t() | keyword()) :: Jido.Exec.exec_result()
+  def step(%Chart{} = chart, %Session{} = session, event, %Registry{} = registry),
+    do: Flow.step(chart, session, event, registry)
+
+  def step(%Chart{} = chart, %Session{} = session, event, options) do
+    with :ok <- validate_root_options(options),
+         %Registry{} = registry <- Keyword.get(options, :registry) do
+      Flow.step(chart, session, event, registry, Keyword.delete(options, :registry))
+    else
+      {:error, _diagnostic} = error -> error
+      _other -> {:error, Diagnostic.new(:invalid_registry, "A trusted Registry is required")}
+    end
+  end
+
+  @doc "Alias for `step/4`."
+  @spec run(Chart.t(), Session.t(), map(), Registry.t() | keyword()) :: Jido.Exec.exec_result()
+  def run(%Chart{} = chart, %Session{} = session, event, registry_or_options),
+    do: step(chart, session, event, registry_or_options)
+
+  defp validate_root_options(options),
+    do: Flow.validate_options(options, [:registry | Flow.runtime_option_keys()])
 
   @doc "Returns safe identity and size data for a normalized chart."
   @spec inspect_chart(Chart.t()) :: map()
@@ -46,6 +84,7 @@ defmodule Jido.Statechart do
       "status" => Atom.to_string(session.status),
       "revision" => session.revision,
       "generated_id_counter" => session.generated_id_counter,
+      "operation_counter" => session.operation_counter,
       "configuration" => session.configuration,
       "history" => session.history,
       "completed" => session.status in [:completed, :cleaning, :stopped],

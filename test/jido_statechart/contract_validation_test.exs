@@ -142,22 +142,24 @@ defmodule Jido.Statechart.ContractValidationTest do
              )
   end
 
-  test "session stores and strictly validates the generated ID counter" do
-    session = session_fixture(%{generated_id_counter: 7})
+  test "session stores and strictly validates its independent ID counters" do
+    session = session_fixture(%{generated_id_counter: 7, operation_counter: 11})
     dump = Session.dump(session)
 
     assert dump["generated_id_counter"] == 7
+    assert dump["operation_counter"] == 11
     assert {:ok, ^session} = Session.load(dump)
 
-    assert {:error, %Diagnostic{code: :missing_session_counter}} =
-             dump |> Map.delete("generated_id_counter") |> Session.load()
+    for field <- ~w(generated_id_counter operation_counter) do
+      assert {:error, %Diagnostic{code: :missing_session_counter, path: [:session, missing]}} =
+               dump |> Map.delete(field) |> Session.load()
 
-    for value <- [-1, 1.5, "1", nil] do
-      assert {:error,
-              %Diagnostic{
-                code: :invalid_session_counter,
-                path: [:session, :generated_id_counter]
-              }} = Session.new(%{session | generated_id_counter: value})
+      assert Atom.to_string(missing) == field
+    end
+
+    for field <- [:generated_id_counter, :operation_counter], value <- [-1, 1.5, "1", nil] do
+      assert {:error, %Diagnostic{code: :invalid_session_counter, path: [:session, ^field]}} =
+               Session.new(Map.put(session, field, value))
     end
 
     assert {:ok, first} = Session.generated_send_id("session-1", "incarnation-1", 7)
@@ -728,6 +730,7 @@ defmodule Jido.Statechart.ContractValidationTest do
     assert inspected_session["completed"]
     assert inspected_session["trace_entries"] == 1
     assert inspected_session["generated_id_counter"] == 0
+    assert inspected_session["operation_counter"] == 0
     refute Map.has_key?(inspected_session, "trace")
   end
 

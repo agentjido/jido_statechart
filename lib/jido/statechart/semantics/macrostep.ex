@@ -19,20 +19,15 @@ defmodule Jido.Statechart.Semantics.Macrostep do
           operation_counts: map()
         }
 
+  @typedoc "Opaque, plain-map state used by the canonical Flow Iterate component."
+  @type flow_state :: map()
+
   @spec initialize(Chart.t(), Session.t(), keyword()) ::
           {:ok, result()} | {:error, Diagnostic.t()}
   def initialize(%Chart{} = chart, %Session{} = session, options) when is_list(options) do
-    with {:ok, context} <- context(chart, session, options),
-         :ok <- validate_session_boundary(chart, session, context.options),
-         :ok <- new_session(session),
-         {:ok, workspace} <- workspace(chart, session, context.options),
-         {:ok, workspace} <- initialize_data(chart, workspace, context.options),
-         {:ok, workspace} <- Microstep.initialize(chart, workspace, context.options),
-         workspace = %{workspace | status: active_status(workspace.status)},
-         {:ok, workspace} <- Trace.append(workspace, Trace.microstep(workspace), context.options),
-         {:ok, workspace} <- stabilize(chart, workspace, context.options),
-         {:ok, workspace} <- exit_interpreter(chart, workspace, context.options) do
-      finish(chart, session, workspace, context.options)
+    with {:ok, state} <- prepare_initialize(chart, session, options),
+         {:ok, state} <- drive(state) do
+      finish(state)
     end
   end
 
@@ -43,6 +38,39 @@ defmodule Jido.Statechart.Semantics.Macrostep do
   @spec run(Chart.t(), Session.t(), Event.t() | map(), keyword()) ::
           {:ok, result()} | {:error, Diagnostic.t()}
   def run(%Chart{} = chart, %Session{} = session, event, options) when is_list(options) do
+    with {:ok, state} <- prepare_run(chart, session, event, options),
+         {:ok, state} <- drive(state) do
+      finish(state)
+    end
+  end
+
+  def run(_chart, _session, _event, _options) do
+    {:error, Diagnostic.new(:invalid_semantic_input, "macrostep input is invalid")}
+  end
+
+  @doc "Validates and prepares initialization without executing a semantic microstep."
+  @spec prepare_initialize(Chart.t(), Session.t(), keyword()) ::
+          {:ok, flow_state()} | {:error, Diagnostic.t()}
+  def prepare_initialize(%Chart{} = chart, %Session{} = session, options)
+      when is_list(options) do
+    with {:ok, context} <- context(chart, session, options),
+         :ok <- validate_session_boundary(chart, session, context.options),
+         :ok <- new_session(session),
+         {:ok, workspace} <- workspace(chart, session, context.options),
+         {:ok, workspace} <- initialize_data(chart, workspace, context.options) do
+      {:ok, flow_state(chart, session, workspace, context.options, :initialize, false)}
+    end
+  end
+
+  def prepare_initialize(_chart, _session, _options) do
+    {:error, Diagnostic.new(:invalid_semantic_input, "initialization input is invalid")}
+  end
+
+  @doc "Validates and prepares one external event without executing a semantic microstep."
+  @spec prepare_run(Chart.t(), Session.t(), Event.t() | map(), keyword()) ::
+          {:ok, flow_state()} | {:error, Diagnostic.t()}
+  def prepare_run(%Chart{} = chart, %Session{} = session, event, options)
+      when is_list(options) do
     with {:ok, context} <- context(chart, session, options),
          :ok <- validate_session_boundary(chart, session, context.options),
          :ok <- runnable_session(session),
@@ -50,15 +78,60 @@ defmodule Jido.Statechart.Semantics.Macrostep do
          {:ok, event} <- normalize_event(event, :external),
          :ok <- validate_event_boundary(event, context.options),
          {:ok, workspace} <- workspace(chart, session, context.options),
-         {:ok, workspace} <- process_event(chart, workspace, event, context.options),
-         {:ok, workspace} <- stabilize(chart, workspace, context.options),
-         {:ok, workspace} <- exit_interpreter(chart, workspace, context.options) do
-      finish(chart, session, workspace, context.options)
+         {:ok, workspace, pending, complete?} <-
+           plan_event(chart, workspace, event, context.options) do
+      {:ok, flow_state(chart, session, workspace, context.options, pending, complete?)}
     end
   end
 
-  def run(_chart, _session, _event, _options) do
+  def prepare_run(_chart, _session, _event, _options) do
     {:error, Diagnostic.new(:invalid_semantic_input, "macrostep input is invalid")}
+  end
+
+  @doc "Executes exactly one planned SCXML semantic microstep."
+  @spec advance(flow_state()) :: {:ok, flow_state()} | {:error, Diagnostic.t()}
+  def advance(%{complete: true}) do
+    {:error, Diagnostic.new(:macrostep_already_stable, "macrostep is already stable")}
+  end
+
+  def advance(
+        %{
+          chart: %Chart{} = chart,
+          workspace: workspace,
+          options: options,
+          pending: pending
+        } = state
+      )
+      when is_map(workspace) and is_list(options) do
+    with {:ok, workspace} <- execute_pending(chart, workspace, pending, options),
+         {:ok, workspace, next_pending, complete?} <- plan_next(chart, workspace, options) do
+      {:ok, %{state | workspace: workspace, pending: next_pending, complete: complete?}}
+    end
+  end
+
+  def advance(_state) do
+    {:error, Diagnostic.new(:invalid_semantic_input, "macrostep workspace is invalid")}
+  end
+
+  @doc "Returns true when the prepared macrostep has reached a stable state."
+  @spec complete?(flow_state()) :: boolean()
+  def complete?(%{complete: value}) when is_boolean(value), do: value
+  def complete?(_state), do: false
+
+  @doc "Builds the atomic macrostep result from stable prepared state."
+  @spec finish(flow_state()) :: {:ok, result()} | {:error, Diagnostic.t()}
+  def finish(%{
+        complete: true,
+        chart: %Chart{} = chart,
+        original_session: %Session{} = original,
+        workspace: workspace,
+        options: options
+      }) do
+    build_result(chart, original, workspace, options)
+  end
+
+  def finish(_state) do
+    {:error, Diagnostic.new(:macrostep_not_stable, "macrostep is not stable")}
   end
 
   defp context(chart, session, options) do
@@ -264,6 +337,7 @@ defmodule Jido.Statechart.Semantics.Macrostep do
          trace: session.trace,
          trace_start: length(session.trace),
          work_count: 0,
+         microstep_count: 0,
          last_microstep: nil
        }}
     else
@@ -331,7 +405,48 @@ defmodule Jido.Statechart.Semantics.Macrostep do
     end
   end
 
-  defp process_event(chart, workspace, event, options) do
+  defp flow_state(chart, original, workspace, options, pending, complete?) do
+    %{
+      chart: chart,
+      original_session: original,
+      workspace: workspace,
+      options: options,
+      pending: pending,
+      complete: complete?
+    }
+  end
+
+  defp drive(%{complete: true} = state), do: {:ok, state}
+
+  defp drive(state) do
+    with {:ok, state} <- advance(state), do: drive(state)
+  end
+
+  defp execute_pending(chart, workspace, :initialize, options) do
+    with {:ok, workspace} <- Microstep.initialize(chart, workspace, options) do
+      workspace = %{
+        workspace
+        | status: active_status(workspace.status),
+          microstep_count: workspace.microstep_count + 1
+      }
+
+      Trace.append(workspace, Trace.microstep(workspace), options)
+    end
+  end
+
+  defp execute_pending(chart, workspace, {:transitions, transitions}, options)
+       when is_list(transitions) do
+    with {:ok, workspace} <- Microstep.run(chart, workspace, transitions, options) do
+      workspace = %{workspace | microstep_count: workspace.microstep_count + 1}
+      Trace.append(workspace, Trace.microstep(workspace), options)
+    end
+  end
+
+  defp execute_pending(_chart, _workspace, _pending, _options) do
+    {:error, Diagnostic.new(:invalid_semantic_input, "planned microstep is invalid")}
+  end
+
+  defp plan_event(chart, workspace, event, options) do
     event_map = Event.dump(event)
 
     with {:ok, transitions, workspace} <-
@@ -339,42 +454,41 @@ defmodule Jido.Statechart.Semantics.Macrostep do
       workspace = put_event(workspace, event_map)
 
       case transitions do
-        [] -> Trace.append(workspace, Trace.discarded(event_map), options)
-        selected -> run_microstep(chart, workspace, selected, options)
+        [] ->
+          with {:ok, workspace} <- Trace.append(workspace, Trace.discarded(event_map), options) do
+            plan_next(chart, workspace, options)
+          end
+
+        selected ->
+          {:ok, workspace, {:transitions, selected}, false}
       end
     end
   end
 
-  defp stabilize(_chart, %{status: :completed} = workspace, _options), do: {:ok, workspace}
+  defp plan_next(chart, %{status: :completed} = workspace, options) do
+    with {:ok, workspace} <- exit_interpreter(chart, workspace, options) do
+      {:ok, workspace, nil, true}
+    end
+  end
 
-  defp stabilize(chart, workspace, options) do
+  defp plan_next(chart, workspace, options) do
     with {:ok, transitions, workspace} <-
            Selection.select(chart, workspace.configuration, nil, workspace, options) do
       cond do
         transitions != [] ->
-          with {:ok, workspace} <- run_microstep(chart, workspace, transitions, options) do
-            stabilize(chart, workspace, options)
-          end
+          {:ok, workspace, {:transitions, transitions}, false}
 
         workspace.internal_queue != [] ->
           [event | rest] = workspace.internal_queue
           workspace = %{workspace | internal_queue: rest}
 
-          with {:ok, event} <- normalize_event(event, :internal),
-               {:ok, workspace} <- process_event(chart, workspace, event, options) do
-            stabilize(chart, workspace, options)
+          with {:ok, event} <- normalize_event(event, :internal) do
+            plan_event(chart, workspace, event, options)
           end
 
         true ->
-          {:ok, workspace}
+          {:ok, workspace, nil, true}
       end
-    end
-  end
-
-  defp run_microstep(chart, workspace, transitions, options) do
-    with {:ok, workspace} <- Microstep.run(chart, workspace, transitions, options),
-         {:ok, workspace} <- Trace.append(workspace, Trace.microstep(workspace), options) do
-      {:ok, workspace}
     end
   end
 
@@ -387,7 +501,10 @@ defmodule Jido.Statechart.Semantics.Macrostep do
 
   defp exit_interpreter(_chart, workspace, _options), do: {:ok, workspace}
 
-  defp normalize_event(%Event{} = event, _default_class), do: {:ok, event}
+  defp normalize_event(%Event{} = event, default_class),
+    do: event |> Map.from_struct() |> normalize_event(default_class)
+
+  defp normalize_event(event, :external) when is_map(event), do: Event.new_external(event)
 
   defp normalize_event(event, default_class) when is_map(event) do
     attrs =
@@ -408,7 +525,7 @@ defmodule Jido.Statechart.Semantics.Macrostep do
   defp active_status(:new), do: :active
   defp active_status(status), do: status
 
-  defp finish(chart, original, workspace, options) do
+  defp build_result(chart, original, workspace, options) do
     session = %{
       original
       | status: workspace.status,
@@ -427,8 +544,12 @@ defmodule Jido.Statechart.Semantics.Macrostep do
 
       counts =
         workspace.intents
-        |> Enum.frequencies_by(&Map.get(&1, "kind", "unknown"))
+        |> Enum.frequencies_by(fn
+          intent when is_map(intent) -> Map.get(intent, "kind", "unknown")
+          _intent -> "unknown"
+        end)
         |> Map.new(fn {kind, count} -> {kind, count} end)
+        |> Map.put("microsteps", workspace.microstep_count)
 
       {:ok,
        %{

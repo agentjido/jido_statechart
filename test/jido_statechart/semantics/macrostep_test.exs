@@ -2,6 +2,7 @@ defmodule Jido.Statechart.Semantics.MacrostepTest do
   use ExUnit.Case, async: true
 
   alias Jido.Statechart.Expression.Reference
+  alias Jido.Statechart.Model.Event
   alias Jido.Statechart.{Limits, SemanticFixture, Session}
   alias Jido.Statechart.Semantics.{Macrostep, Trace}
 
@@ -43,6 +44,29 @@ defmodule Jido.Statechart.Semantics.MacrostepTest do
     assert result.session.internal_queue == []
     assert Enum.map(result.trace, & &1["event"]) == ["unknown", "error.execution"]
     assert Enum.all?(result.trace, &(&1["kind"] == "event_discarded"))
+  end
+
+  test "public macrosteps accept only reconstructed external events" do
+    chart = SemanticFixture.chart(~s(<state id="root"/>))
+    session = SemanticFixture.session(chart, status: :active, configuration: ["root"])
+    options = SemanticFixture.options()
+
+    for event <- [
+          %{},
+          %{name: ""},
+          %Event{name: nil, class: :external},
+          %{name: "go", class: :internal},
+          %{name: "go", class: :platform},
+          Event.new!(%{name: "go", class: :internal}),
+          Event.new!(%{name: "go", class: :platform})
+        ] do
+      assert {:error, _diagnostic} = Macrostep.run(chart, session, event, options)
+    end
+
+    for event <- [%{name: "go"}, %{name: "go", class: :external}, Event.new!(%{name: "go"})] do
+      assert {:ok, result} = Macrostep.run(chart, session, event, options)
+      assert result.session.configuration == ["root"]
+    end
   end
 
   test "work and trace limits stop at the exact boundary with no partial result" do
