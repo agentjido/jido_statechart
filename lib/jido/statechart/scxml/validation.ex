@@ -78,6 +78,7 @@ defmodule Jido.Statechart.SCXML.Validation do
          :ok <- idrefs_if_present(root, "initial"),
          :ok <- maximum_children(root, "datamodel", 1),
          :ok <- validate_children(root, "scxml"),
+         :ok <- null_action_content(root),
          :ok <- root_states(root) do
       :ok
     end
@@ -717,6 +718,28 @@ defmodule Jido.Statechart.SCXML.Validation do
 
   defp elements(node) do
     for {:element, child} <- node.content, do: child
+  end
+
+  defp null_action_content(root) do
+    if attribute(root, "datamodel") in [nil, "null"] do
+      case find_jido_action(root) do
+        nil ->
+          :ok
+
+        action ->
+          error(action, :null_action_forbidden, "The null data model cannot execute Actions",
+            profile_feature: "jido_action_extension"
+          )
+      end
+    else
+      :ok
+    end
+  end
+
+  defp find_jido_action(node) do
+    Enum.find_value(elements(node), fn child ->
+      if child.name == {@jido, "action"}, do: child, else: find_jido_action(child)
+    end)
   end
 
   defp children_named(node, local) do

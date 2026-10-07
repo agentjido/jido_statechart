@@ -1,7 +1,7 @@
 defmodule Jido.Statechart.ModelTest do
   use ExUnit.Case, async: true
 
-  alias Jido.Statechart.{Diagnostic, Limits, Profile, Result, Session}
+  alias Jido.Statechart.{Diagnostic, Limits, Profile, Result, SCXML, Session}
   alias Jido.Statechart.Model.{Chart, Event, Executable, Source, State, Transition}
   alias Jido.Statechart.Session.Operation
 
@@ -65,6 +65,163 @@ defmodule Jido.Statechart.ModelTest do
              Chart.new(%{
                chart
                | states: [%{root | initial: ["regions", "left"]}, regions, left, right]
+             })
+  end
+
+  test "rejects illegal transition target state specifications" do
+    chart = chart_fixture()
+    [transition] = chart.transitions
+    invalid = %{transition | target_ids: ["regions", "left"]}
+
+    assert {:error, %Diagnostic{code: :invalid_transition_targets}} =
+             Chart.new(%{chart | transitions: [invalid]})
+
+    refute Chart.legal_transition_targets?(nil, ["left"], chart.states)
+  end
+
+  test "applies history target restrictions in the shared chart validator" do
+    chart =
+      SCXML.compile!("""
+      <scxml xmlns="http://www.w3.org/2005/07/scxml" version="1.0" initial="root">
+        <state id="root" initial="branch">
+          <history id="remember" type="shallow"><transition target="branch"/></history>
+          <state id="branch" initial="leaf"><state id="leaf"/></state>
+        </state>
+      </scxml>
+      """)
+
+    [transition] = chart.transitions
+
+    assert {:error, %Diagnostic{code: :invalid_transition_targets}} =
+             Chart.new(%{chart | transitions: [%{transition | target_ids: ["leaf"]}]})
+  end
+
+  test "requires one target-only default transition for every history state" do
+    chart = history_chart_fixture()
+    history = Enum.find(chart.states, &(&1.id == "remember"))
+    [transition] = chart.transitions
+
+    assert {:error, %Diagnostic{code: :invalid_history_transition}} =
+             Chart.new(%{
+               chart
+               | states:
+                   Enum.map(
+                     chart.states,
+                     &if(&1.id == history.id, do: %{&1 | transition_ids: []}, else: &1)
+                   ),
+                 transitions: []
+             })
+
+    second = %{transition | id: "second", ordinal: 1}
+
+    assert {:error, %Diagnostic{code: :invalid_history_transition}} =
+             Chart.new(%{
+               chart
+               | states:
+                   Enum.map(
+                     chart.states,
+                     &if(&1.id == history.id,
+                       do: %{&1 | transition_ids: [transition.id, second.id]},
+                       else: &1
+                     )
+                   ),
+                 transitions: [transition, second]
+             })
+
+    for malformed <- [
+          %{transition | events: ["go"]},
+          %{transition | condition: "condition"},
+          %{transition | type: :internal}
+        ] do
+      assert {:error, %Diagnostic{code: :invalid_history_transition}} =
+               Chart.new(%{chart | transitions: [malformed]})
+    end
+
+    malformed_executable = %Executable{kind: :unknown, ordinal: 0}
+
+    assert {:error, %Diagnostic{code: :invalid_executable_kind}} =
+             Chart.new(%{
+               chart
+               | transitions: [%{transition | executable: [malformed_executable]}]
+             })
+  end
+
+  test "validates normalized root initial metadata and initial transition content" do
+    chart = history_chart_fixture()
+
+    for metadata <- [
+          Map.delete(chart.metadata, "root_initial"),
+          Map.put(chart.metadata, "root_initial", ["missing"]),
+          Map.put(chart.metadata, "root_initial", ["root", "branch"])
+        ] do
+      assert {:error, %Diagnostic{code: :invalid_root_initial}} =
+               Chart.new(%{chart | metadata: metadata})
+    end
+
+    for content <- [
+          "not a map",
+          %{"missing" => []},
+          %{"remember" => []},
+          %{"root" => "not a list"},
+          %{"root" => [%{"kind" => "unknown", "ordinal" => 0}]}
+        ] do
+      assert {:error, %Diagnostic{code: code}} =
+               Chart.new(%{
+                 chart
+                 | metadata: Map.put(chart.metadata, "initial_transition_content", content)
+               })
+
+      assert code in [:invalid_initial_transition_content, :invalid_executable_kind]
+    end
+  end
+
+  test "rejects Actions in a null data-model chart" do
+    chart = chart_fixture()
+    [root | rest] = chart.states
+
+    action =
+      Executable.new!(%{
+        kind: :action,
+        ordinal: 0,
+        data: %{"id" => "work"},
+        source: root.source
+      })
+
+    assert {:error, %Diagnostic{code: :null_action_forbidden}} =
+             Chart.new(%{
+               chart
+               | datamodel: "null",
+                 states: [%{root | on_entry: [action]} | rest]
+             })
+
+    metadata =
+      Map.put(
+        chart.metadata,
+        "initial_transition_content",
+        %{"root" => [Executable.dump(action)]}
+      )
+
+    assert {:error, %Diagnostic{code: :null_action_forbidden}} =
+             Chart.new(%{chart | datamodel: "null", metadata: metadata})
+
+    nested_metadata =
+      chart.metadata
+      |> Map.delete("initial_transition_content")
+      |> Map.put(:initial_transition_content, %{"root" => [Executable.dump(action)]})
+
+    assert {:error, %Diagnostic{code: :null_action_forbidden}} =
+             Chart.new(%{chart | datamodel: "null", metadata: nested_metadata})
+
+    assert {:error, %Diagnostic{code: :invalid_initial_transition_content}} =
+             Chart.new(%{
+               chart
+               | datamodel: "null",
+                 metadata:
+                   Map.put(
+                     chart.metadata,
+                     "initial_transition_content",
+                     "not executable content"
+                   )
              })
   end
 
@@ -195,8 +352,23 @@ defmodule Jido.Statechart.ModelTest do
       root_state_ids: ["root"],
       states: states,
       transitions: transitions,
-      metadata: %{"owner" => "test"},
+      metadata: %{
+        "owner" => "test",
+        "root_initial" => ["root"],
+        "initial_transition_content" => %{}
+      },
       source: source
     })
+  end
+
+  defp history_chart_fixture do
+    SCXML.compile!("""
+    <scxml xmlns="http://www.w3.org/2005/07/scxml" version="1.0" initial="root">
+      <state id="root" initial="branch">
+        <history id="remember" type="shallow"><transition target="branch"/></history>
+        <state id="branch" initial="leaf"><state id="leaf"/></state>
+      </state>
+    </scxml>
+    """)
   end
 end

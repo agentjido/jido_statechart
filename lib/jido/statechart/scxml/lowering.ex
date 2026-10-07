@@ -197,11 +197,22 @@ defmodule Jido.Statechart.SCXML.Lowering do
 
   defp legal_target_sets(transitions, entries) do
     by_id = Map.new(entries, &{&1.id, &1})
-    parent_by_id = Map.new(entries, &{&1.id, parent_id(&1, entries)})
+
+    state_specs =
+      Enum.map(entries, fn entry ->
+        %{
+          id: entry.id,
+          parent: parent_id(entry, entries),
+          kind: state_kind(entry.node)
+        }
+      end)
 
     Enum.reduce_while(transitions, :ok, fn transition, :ok ->
-      case legal_targets?(transition.targets, by_id, parent_by_id) and
-             legal_history_targets?(transition, by_id, parent_by_id) do
+      case Chart.legal_transition_targets?(
+             transition.source_id,
+             transition.targets,
+             state_specs
+           ) do
         true ->
           {:cont, :ok}
 
@@ -223,30 +234,6 @@ defmodule Jido.Statechart.SCXML.Lowering do
     end)
   end
 
-  defp legal_history_targets?(transition, by_id, parents) do
-    case Map.fetch!(by_id, transition.source_id) do
-      %{node: node, parent_path: parent_path} when elem(node.name, 1) == "history" ->
-        parent =
-          Enum.find_value(by_id, fn {id, entry} ->
-            if path_key(entry.node) == parent_path, do: id
-          end)
-
-        valid_targets? =
-          Enum.all?(transition.targets, fn target ->
-            state_kind(Map.fetch!(by_id, target).node) not in [:history_shallow, :history_deep]
-          end)
-
-        valid_targets? and
-          case state_kind(node) do
-            :history_shallow -> Enum.all?(transition.targets, &(Map.get(parents, &1) == parent))
-            :history_deep -> Enum.all?(transition.targets, &(parent in ancestors(&1, parents)))
-          end
-
-      _entry ->
-        true
-    end
-  end
-
   defp legal_targets?([], _by_id, _parents), do: true
   defp legal_targets?([_one], _by_id, _parents), do: true
 
@@ -265,9 +252,7 @@ defmodule Jido.Statechart.SCXML.Lowering do
   end
 
   defp lowest_common_ancestor([first | rest], parents) do
-    candidates = ancestors(first, parents)
-
-    Enum.find(candidates, fn candidate ->
+    Enum.find(ancestors(first, parents), fn candidate ->
       Enum.all?(rest, &(candidate in ancestors(&1, parents)))
     end)
   end

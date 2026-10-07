@@ -826,6 +826,7 @@ defmodule Jido.Statechart.ContractValidationTest do
       root_state_ids: ["root"],
       states: [root, left, right],
       transitions: [transition],
+      metadata: %{"root_initial" => ["root"], "initial_transition_content" => %{}},
       source: source
     })
   end

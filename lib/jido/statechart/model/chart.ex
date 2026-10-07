@@ -8,7 +8,7 @@ defmodule Jido.Statechart.Model.Chart do
   """
 
   alias Jido.Statechart.Diagnostic
-  alias Jido.Statechart.Model.{Source, State, Transition}
+  alias Jido.Statechart.Model.{Executable, Source, State, Transition}
 
   @datamodels ["null", "jido"]
   @semantic_fields [
@@ -62,7 +62,10 @@ defmodule Jido.Statechart.Model.Chart do
            root_ids(Diagnostic.fetch(attrs, :root_state_ids, []), states),
          :ok <- state_links(states, root_state_ids),
          :ok <- transition_links(transitions, states),
+         :ok <- history_transitions(states, transitions),
          {:ok, metadata} <- metadata(Diagnostic.fetch(attrs, :metadata, %{})),
+         :ok <- semantic_metadata(metadata, root_state_ids, states),
+         :ok <- null_action_content(datamodel, states, transitions, metadata),
          {:ok, source} <- source(Diagnostic.fetch(attrs, :source)) do
       chart = %__MODULE__{
         id: id,
@@ -152,6 +155,21 @@ defmodule Jido.Statechart.Model.Chart do
       "source" => if(chart.source, do: Source.dump(chart.source))
     })
   end
+
+  @doc false
+  @spec legal_transition_targets?(String.t(), [String.t()], [State.t() | map()]) :: boolean()
+  def legal_transition_targets?(source_id, targets, states)
+      when is_binary(source_id) and is_list(targets) and is_list(states) do
+    by_id = Map.new(states, &{&1.id, &1})
+
+    Map.has_key?(by_id, source_id) and
+      Enum.all?(targets, &Map.has_key?(by_id, &1)) and
+      length(targets) == length(Enum.uniq(targets)) and
+      legal_state_spec?(targets, by_id) and
+      legal_history_targets?(Map.fetch!(by_id, source_id), targets, by_id)
+  end
+
+  def legal_transition_targets?(_source_id, _targets, _states), do: false
 
   defp id(attrs) do
     with {:ok, id} <- Diagnostic.require_string(attrs, :id, [:chart]),
@@ -419,7 +437,7 @@ defmodule Jido.Statechart.Model.Chart do
 
     lcca = lowest_common_state_ancestor(targets, by_id)
 
-    no_ancestor_pair? and match?(%State{kind: :parallel}, Map.get(by_id, lcca)) and
+    no_ancestor_pair? and match?(%{kind: :parallel}, Map.get(by_id, lcca)) and
       targets
       |> Enum.map(&state_region_below(&1, lcca, by_id))
       |> then(&(nil not in &1 and length(&1) == length(Enum.uniq(&1))))
@@ -433,17 +451,17 @@ defmodule Jido.Statechart.Model.Chart do
 
   defp state_ancestors(id, by_id) do
     case Map.get(by_id, id) do
-      %State{parent: nil} -> []
-      %State{parent: parent} -> [parent | state_ancestors(parent, by_id)]
+      %{parent: nil} -> []
+      %{parent: parent} -> [parent | state_ancestors(parent, by_id)]
       nil -> []
     end
   end
 
   defp state_region_below(target, ancestor, by_id) do
     case Map.get(by_id, target) do
-      %State{parent: ^ancestor} -> target
-      %State{parent: nil} -> nil
-      %State{parent: parent} -> state_region_below(parent, ancestor, by_id)
+      %{parent: ^ancestor} -> target
+      %{parent: nil} -> nil
+      %{parent: parent} -> state_region_below(parent, ancestor, by_id)
       nil -> nil
     end
   end
@@ -496,6 +514,19 @@ defmodule Jido.Statechart.Model.Chart do
                   {:error,
                    Diagnostic.new(:unknown_state, "transition target does not exist",
                      path: [:transitions, index, :target_ids, invalid_target]
+                   )}}
+
+               not legal_transition_targets?(
+                 transition.source_id,
+                 transition.target_ids,
+                 states
+               ) ->
+                 {:halt,
+                  {:error,
+                   Diagnostic.new(
+                     :invalid_transition_targets,
+                     "transition targets must be a legal state specification",
+                     path: [:transitions, index, :target_ids]
                    )}}
 
                true ->
@@ -558,6 +589,253 @@ defmodule Jido.Statechart.Model.Chart do
       end
     end)
   end
+
+  defp history_transitions(states, transitions) do
+    by_id = Map.new(transitions, &{&1.id, &1})
+
+    states
+    |> Enum.with_index()
+    |> Enum.filter(fn {state, _index} ->
+      state.kind in [:history_shallow, :history_deep]
+    end)
+    |> Enum.reduce_while(:ok, fn {state, index}, :ok ->
+      valid? =
+        case state.transition_ids do
+          [transition_id] ->
+            case Map.get(by_id, transition_id) do
+              %Transition{} = transition ->
+                transition.source_id == state.id and transition.target_ids != [] and
+                  transition.events == [] and is_nil(transition.condition) and
+                  transition.type == :external and ordered_executables?(transition.executable)
+
+              nil ->
+                false
+            end
+
+          _other ->
+            false
+        end
+
+      if valid? do
+        {:cont, :ok}
+      else
+        {:halt,
+         {:error,
+          Diagnostic.new(
+            :invalid_history_transition,
+            "history state must have one target-only default transition",
+            path: [:states, index, :transition_ids]
+          )}}
+      end
+    end)
+  end
+
+  defp semantic_metadata(metadata, root_state_ids, states) do
+    with {:ok, root_initial} <- required_metadata_value(metadata, :root_initial),
+         :ok <- valid_root_initial(root_initial, root_state_ids, states),
+         {:ok, initial_content} <-
+           required_metadata_value(metadata, :initial_transition_content),
+         :ok <- valid_initial_transition_content(initial_content, states) do
+      :ok
+    end
+  end
+
+  defp required_metadata_value(metadata, field) do
+    atom? = Map.has_key?(metadata, field)
+    string? = Map.has_key?(metadata, Atom.to_string(field))
+
+    cond do
+      atom? and string? ->
+        {:error,
+         Diagnostic.new(metadata_code(field), "normalized metadata field is duplicated",
+           path: [:metadata, field]
+         )}
+
+      atom? or string? ->
+        {:ok, Diagnostic.fetch(metadata, field)}
+
+      true ->
+        {:error,
+         Diagnostic.new(metadata_code(field), "normalized metadata field is required",
+           path: [:metadata, field]
+         )}
+    end
+  end
+
+  defp valid_root_initial(targets, root_state_ids, states)
+       when is_list(targets) and targets != [] do
+    by_id = Map.new(states, &{&1.id, &1})
+
+    valid_ids? =
+      Enum.all?(targets, fn target ->
+        is_binary(target) and Map.has_key?(by_id, target)
+      end)
+
+    top_level_ids =
+      if valid_ids?,
+        do: targets |> Enum.map(&top_level_state(&1, by_id)) |> Enum.uniq(),
+        else: []
+
+    if valid_ids? and targets == Enum.uniq(targets) and legal_state_spec?(targets, by_id) and
+         length(top_level_ids) == 1 and hd(top_level_ids) in root_state_ids do
+      :ok
+    else
+      invalid_root_initial()
+    end
+  end
+
+  defp valid_root_initial(_targets, _root_state_ids, _states), do: invalid_root_initial()
+
+  defp invalid_root_initial do
+    {:error,
+     Diagnostic.new(
+       :invalid_root_initial,
+       "root initial targets must be one known legal state specification",
+       path: [:metadata, :root_initial]
+     )}
+  end
+
+  defp top_level_state(id, by_id) do
+    case Map.get(by_id, id) do
+      %{parent: nil} -> id
+      %{parent: parent} -> top_level_state(parent, by_id)
+      nil -> nil
+    end
+  end
+
+  defp valid_initial_transition_content(content, states)
+       when is_map(content) and not is_struct(content) do
+    by_id = Map.new(states, &{&1.id, &1})
+
+    content
+    |> Enum.reduce_while(:ok, fn {state_id, commands}, :ok ->
+      eligible? =
+        case Map.get(by_id, state_id) do
+          %State{kind: :compound, initial: [_ | _]} -> true
+          _other -> false
+        end
+
+      cond do
+        not eligible? ->
+          {:halt, invalid_initial_transition_content("content key is not an eligible state")}
+
+        not is_list(commands) ->
+          {:halt, invalid_initial_transition_content("content value must be an executable list")}
+
+        true ->
+          case valid_executable_list(commands, state_id) do
+            :ok -> {:cont, :ok}
+            {:error, _diagnostic} = error -> {:halt, error}
+          end
+      end
+    end)
+  end
+
+  defp valid_initial_transition_content(_content, _states) do
+    invalid_initial_transition_content("initial transition content must be a map")
+  end
+
+  defp valid_executable_list(commands, state_id) do
+    commands
+    |> Enum.with_index()
+    |> Enum.reduce_while(:ok, fn {command, index}, :ok ->
+      case Executable.new(command) do
+        {:ok, %Executable{ordinal: ^index}} ->
+          {:cont, :ok}
+
+        {:ok, _executable} ->
+          {:halt,
+           invalid_initial_transition_content(
+             "executable ordinals must follow document order",
+             [state_id, index]
+           )}
+
+        {:error, diagnostic} ->
+          {:halt,
+           {:error,
+            Diagnostic.prefix(
+              diagnostic,
+              [:metadata, :initial_transition_content, state_id, index]
+            )}}
+      end
+    end)
+  end
+
+  defp invalid_initial_transition_content(message, suffix \\ []) do
+    {:error,
+     Diagnostic.new(:invalid_initial_transition_content, message,
+       path: [:metadata, :initial_transition_content | suffix]
+     )}
+  end
+
+  defp metadata_code(:root_initial), do: :invalid_root_initial
+  defp metadata_code(:initial_transition_content), do: :invalid_initial_transition_content
+
+  defp ordered_executables?(commands) do
+    commands
+    |> Enum.with_index()
+    |> Enum.all?(fn {command, index} -> command.ordinal == index end)
+  end
+
+  defp legal_history_targets?(%{kind: kind, parent: parent}, targets, by_id)
+       when kind in [:history_shallow, :history_deep] do
+    targets != [] and is_binary(parent) and
+      Enum.all?(targets, fn target ->
+        target_state = Map.fetch!(by_id, target)
+
+        target_state.kind not in [:history_shallow, :history_deep] and
+          case kind do
+            :history_shallow -> target_state.parent == parent
+            :history_deep -> parent in state_ancestors(target, by_id)
+          end
+      end)
+  end
+
+  defp legal_history_targets?(_source, _targets, _by_id), do: true
+
+  defp null_action_content("null", states, transitions, metadata) do
+    initial_commands =
+      case Diagnostic.fetch(metadata, :initial_transition_content, %{}) do
+        values when is_map(values) -> values |> Map.values() |> List.flatten()
+        _other -> []
+      end
+
+    commands =
+      Enum.flat_map(states, &(&1.on_entry ++ &1.on_exit)) ++
+        Enum.flat_map(transitions, & &1.executable) ++ initial_commands
+
+    case Enum.find(commands, &contains_action?/1) do
+      nil ->
+        :ok
+
+      command ->
+        {:error,
+         Diagnostic.new(:null_action_forbidden, "The null data model cannot execute Actions",
+           path: [:executable],
+           location:
+             case Map.get(command, :source) do
+               %Source{} = source -> Source.dump(source)
+               _other -> nil
+             end,
+           profile_feature: "jido_action_extension"
+         )}
+    end
+  end
+
+  defp null_action_content(_datamodel, _states, _transitions, _metadata), do: :ok
+
+  defp contains_action?(%{kind: :action}), do: true
+  defp contains_action?(%{kind: "action"}), do: true
+
+  defp contains_action?(%{children: children}) when is_list(children),
+    do: Enum.any?(children, &contains_action?/1)
+
+  defp contains_action?(%{"kind" => "action"}), do: true
+
+  defp contains_action?(%{"children" => children}) when is_list(children),
+    do: Enum.any?(children, &contains_action?/1)
+
+  defp contains_action?(_command), do: false
 
   defp metadata(value) when is_map(value) and not is_struct(value) do
     with :ok <- Diagnostic.portable(value, [:metadata]), do: {:ok, value}

@@ -102,12 +102,21 @@ defmodule Jido.Statechart.SCXML.ValidationTest do
 
   test "validates Jido action extension as data only" do
     assert {:ok, chart} =
-             body(
+             body_jido(
                ~s(<state id="s"><onentry><j:action xmlns:j="urn:jido:statechart:1" id="work"/></onentry></state>)
              )
              |> SCXML.compile()
 
     assert [%{kind: :action, data: %{"id" => "work"}}] = hd(chart.states).on_entry
+
+    assert {:error,
+            %Diagnostic{code: :null_action_forbidden, path: path, location: %{"uri" => nil}}} =
+             body(
+               ~s(<state id="s"><onentry><j:action xmlns:j="urn:jido:statechart:1" id="work"/></onentry></state>)
+             )
+             |> SCXML.compile()
+
+    assert List.last(path) == 0
 
     assert {:error, %Diagnostic{code: :missing_required_attribute}} =
              body(
@@ -121,6 +130,9 @@ defmodule Jido.Statechart.SCXML.ValidationTest do
   end
 
   defp body(value), do: ~s(<scxml xmlns="#{@uri}" version="1.0">#{value}</scxml>)
+
+  defp body_jido(value),
+    do: ~s(<scxml xmlns="#{@uri}" version="1.0" datamodel="jido">#{value}</scxml>)
 
   defp document(body, attrs) do
     attrs = Keyword.put_new(attrs, :version, "1.0")

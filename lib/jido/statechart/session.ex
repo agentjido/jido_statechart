@@ -34,6 +34,7 @@ defmodule Jido.Statechart.Session do
               :revision,
               :revision_fence,
               :generated_id_counter,
+              :initialized_data_state_ids,
               :configuration,
               :history,
               :data,
@@ -586,6 +587,7 @@ defmodule Jido.Statechart.Session do
             revision: 0,
             revision_fence: 0,
             generated_id_counter: 0,
+            initialized_data_state_ids: [],
             configuration: [],
             history: %{},
             data: %{},
@@ -626,6 +628,13 @@ defmodule Jido.Statechart.Session do
          {:ok, revision_fence} <- nonnegative(attrs, :revision_fence, 0),
          :ok <- required_counter(attrs, :generated_id_counter, strict?),
          {:ok, generated_id_counter} <- nonnegative(attrs, :generated_id_counter, 0),
+         :ok <- required_ids(attrs, :initialized_data_state_ids, strict?),
+         {:ok, initialized_data_state_ids} <-
+           ids(
+             Diagnostic.fetch(attrs, :initialized_data_state_ids, []),
+             :initialized_data_state_ids
+           ),
+         :ok <- unique_ids(initialized_data_state_ids, :initialized_data_state_ids),
          {:ok, configuration} <- ids(Diagnostic.fetch(attrs, :configuration, []), :configuration),
          {:ok, history} <- history(Diagnostic.fetch(attrs, :history, %{})),
          {:ok, data} <- portable_map(Diagnostic.fetch(attrs, :data, %{}), :data),
@@ -652,6 +661,7 @@ defmodule Jido.Statechart.Session do
            revision: revision,
            revision_fence: revision_fence,
            generated_id_counter: generated_id_counter,
+           initialized_data_state_ids: initialized_data_state_ids,
            configuration: configuration,
            history: history,
            data: data,
@@ -974,6 +984,19 @@ defmodule Jido.Statechart.Session do
 
   defp required_counter(_attrs, _field, false), do: :ok
 
+  defp required_ids(attrs, field, true) do
+    if Diagnostic.fetch(attrs, field, :missing) == :missing do
+      {:error,
+       Diagnostic.new(:missing_session_field, "stored session field is missing",
+         path: [:session, field]
+       )}
+    else
+      :ok
+    end
+  end
+
+  defp required_ids(_attrs, _field, false), do: :ok
+
   defp ids(values, field) when is_list(values) do
     values
     |> Enum.with_index()
@@ -995,6 +1018,17 @@ defmodule Jido.Statechart.Session do
        Diagnostic.new(:invalid_session_ids, "session identifiers must be a list",
          path: [:session, field]
        )}
+
+  defp unique_ids(ids, field) do
+    if length(ids) == length(Enum.uniq(ids)) do
+      :ok
+    else
+      {:error,
+       Diagnostic.new(:duplicate_session_id, "session identifier list has a duplicate",
+         path: [:session, field]
+       )}
+    end
+  end
 
   defp history(value) when is_map(value) and not is_struct(value) do
     value

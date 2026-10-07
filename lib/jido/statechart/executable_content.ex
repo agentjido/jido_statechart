@@ -25,15 +25,31 @@ defmodule Jido.Statechart.ExecutableContent do
     if Keyword.keyword?(options) do
       with {:ok, model} <- data_model(options),
            {:ok, registry} <- registry(options),
-           {:ok, limits} <- limits(options),
-           :ok <- validate_commands(commands, model),
-           {:ok, state} <- prepare_state(state, model, limits) do
-        context = %{model: model, registry: registry, limits: limits, options: options}
+           {:ok, limits} <- limits(options) do
+        case validate_commands(commands, model) do
+          :ok ->
+            with {:ok, state} <- prepare_state(state, model, limits) do
+              context = %{model: model, registry: registry, limits: limits, options: options}
 
-        case run_block(commands, state, context) do
-          {:ok, next} -> {:ok, next}
-          {:execution_error, diagnostic, next} -> add_execution_error(next, diagnostic, limits)
-          {:error, diagnostic} -> {:error, diagnostic}
+              case run_block(commands, state, context) do
+                {:ok, next} ->
+                  {:ok, next}
+
+                {:execution_error, diagnostic, next} ->
+                  add_execution_error(next, diagnostic, limits)
+
+                {:error, diagnostic} ->
+                  {:error, diagnostic}
+              end
+            end
+
+          {:error, %Diagnostic{code: :null_action_forbidden} = diagnostic} ->
+            with {:ok, state} <- prepare_state(state, model, limits) do
+              add_execution_error(state, diagnostic, limits)
+            end
+
+          {:error, _diagnostic} = error ->
+            error
         end
       end
     else

@@ -430,12 +430,14 @@ defmodule Jido.Statechart.ExecutableContentTest do
 
     command = executable(:action, 0, %{"id" => "replace"})
 
-    assert {:error, %{code: :null_action_forbidden}} =
+    assert {:ok, result} =
              ExecutableContent.run([command], %{},
                data_model: NullDataModel,
                registry: registry,
                limits: Limits.default()
              )
+
+    assert [%{"name" => "error.execution", "class" => "platform"}] = result.internal_queue
 
     assert {:error, %{code: :invalid_execution_state}} =
              ExecutableContent.run([], %{data: %{"unexpected" => true}},
