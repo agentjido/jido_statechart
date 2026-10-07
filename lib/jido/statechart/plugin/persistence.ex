@@ -2,7 +2,7 @@ defmodule Jido.Statechart.Plugin.Persistence do
   @moduledoc false
 
   alias Jido.Persistence.Plugin.Context
-  alias Jido.Statechart.{Limits, Plugin, Registry, Session}
+  alias Jido.Statechart.{Limits, Plugin, Profile, Registry, Session}
 
   @checkpoint_version 5
   @version_four 4
@@ -55,10 +55,15 @@ defmodule Jido.Statechart.Plugin.Persistence do
   def load(_value, _context, _opts), do: {:error, :invalid_statechart_persistence_context}
 
   @doc false
-  def migrate(%{"checkpoint_version" => @checkpoint_version} = value, _opts), do: {:ok, value}
+  def migrate(%{"checkpoint_version" => @checkpoint_version} = value, _opts) do
+    with :ok <- compatible_profile(value) do
+      {:ok, value}
+    end
+  end
 
   def migrate(%{"checkpoint_version" => @version_four} = value, _opts) do
-    with true <- Map.keys(value) |> Enum.sort() == Enum.sort(@fields),
+    with :ok <- compatible_profile(value),
+         true <- Map.keys(value) |> Enum.sort() == Enum.sort(@fields),
          {:ok, session} <- migrate_session(value["session"]) do
       {:ok,
        value
@@ -69,12 +74,14 @@ defmodule Jido.Statechart.Plugin.Persistence do
        )
        |> Map.put("session", session)}
     else
+      {:error, {:statechart_checkpoint_profile_mismatch, _, _}} = error -> error
       _other -> {:error, :invalid_statechart_v4_checkpoint}
     end
   end
 
   def migrate(%{"checkpoint_version" => @version_three} = value, _opts) do
-    with true <- Map.keys(value) |> Enum.sort() == Enum.sort(@fields),
+    with :ok <- compatible_profile(value),
+         true <- Map.keys(value) |> Enum.sort() == Enum.sort(@fields),
          {:ok, session} <- migrate_session(value["session"]) do
       {:ok,
        value
@@ -85,12 +92,14 @@ defmodule Jido.Statechart.Plugin.Persistence do
        )
        |> Map.put("session", session)}
     else
+      {:error, {:statechart_checkpoint_profile_mismatch, _, _}} = error -> error
       _other -> {:error, :invalid_statechart_v3_checkpoint}
     end
   end
 
   def migrate(%{"checkpoint_version" => @version_two} = value, opts) do
-    with {:ok, config} <- contract(opts),
+    with :ok <- compatible_profile(value),
+         {:ok, config} <- contract(opts),
          true <- Map.keys(value) |> Enum.sort() == Enum.sort(@version_two_fields),
          {:ok, session} <- migrate_session(value["session"]) do
       {:ok,
@@ -103,12 +112,14 @@ defmodule Jido.Statechart.Plugin.Persistence do
        |> Map.put("duplicate_window", config.duplicate_window)
        |> Map.put("session", session)}
     else
+      {:error, {:statechart_checkpoint_profile_mismatch, _, _}} = error -> error
       _other -> {:error, :invalid_statechart_v2_checkpoint}
     end
   end
 
   def migrate(%{"checkpoint_version" => @version_one} = value, opts) do
-    with {:ok, config} <- contract(opts),
+    with :ok <- compatible_profile(value),
+         {:ok, config} <- contract(opts),
          true <- Map.keys(value) |> Enum.sort() == ["checkpoint_version", "session", "signal_ids"],
          ids when is_list(ids) <- value["signal_ids"],
          {:ok, session} <- migrate_session(value["session"]) do
@@ -126,6 +137,7 @@ defmodule Jido.Statechart.Plugin.Persistence do
          "recent_signal_ids" => state.recent_signal_ids
        })}
     else
+      {:error, {:statechart_checkpoint_profile_mismatch, _, _}} = error -> error
       _other -> {:error, :invalid_statechart_v1_checkpoint}
     end
   end
@@ -238,6 +250,22 @@ defmodule Jido.Statechart.Plugin.Persistence do
   end
 
   defp migrate_session(_session), do: {:error, :unsupported_statechart_session_migration}
+
+  defp compatible_profile(%{"checkpoint_version" => @version_one, "session" => session})
+       when is_map(session),
+       do: compatible_profile_version(session["profile_version"])
+
+  defp compatible_profile(%{"checkpoint_version" => @version_one}),
+    do: {:error, {:statechart_checkpoint_profile_mismatch, nil, Profile.version()}}
+
+  defp compatible_profile(value),
+    do: compatible_profile_version(value["profile_version"])
+
+  defp compatible_profile_version(version) do
+    if version == Profile.version(),
+      do: :ok,
+      else: {:error, {:statechart_checkpoint_profile_mismatch, version, Profile.version()}}
+  end
 
   defp legacy_high_water(operations, tombstones) do
     (Map.values(operations) ++ Map.values(tombstones))

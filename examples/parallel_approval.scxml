@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       version="1.0" name="parallel-approval" initial="review">
+  <state id="review" initial="approval">
+    <transition event="done.state.approval" target="approved"/>
+
+    <parallel id="approval">
+      <state id="legal" initial="legal_pending">
+        <state id="legal_pending">
+          <transition event="approval.legal" target="legal_done"/>
+        </state>
+        <final id="legal_done"/>
+      </state>
+
+      <state id="finance" initial="finance_pending">
+        <state id="finance_pending">
+          <transition event="approval.finance" target="finance_done"/>
+        </state>
+        <final id="finance_done"/>
+      </state>
+    </parallel>
+  </state>
+
+  <final id="approved"/>
+</scxml>

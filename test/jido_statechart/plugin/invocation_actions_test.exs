@@ -128,6 +128,7 @@ defmodule Jido.Statechart.Plugin.InvocationActionsTest do
     assert directive.tag == invoke.target
     assert directive.invoke_operation_id == invoke.id
     assert {:ok, ^directive} = OwnedChildControl.validate(directive)
+    assert {:error, :invalid_statechart_owned_child_control} = OwnedChildControl.validate(%{})
   end
 
   test "ChildResult emits done.invoke once and records a durable stop" do

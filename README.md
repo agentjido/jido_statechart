@@ -1,207 +1,171 @@
 # Jido Statechart
 
-A first-party statechart package for Jido V3. The engine computes one complete,
-stable candidate for each external event. Jido owns the state commit and the
-execution of post-commit Directives.
+Jido Statechart provides bounded SCXML statecharts for Jido V3. It compiles a
+secure SCXML input into one normalized chart. The same semantic kernel runs in
+the direct `Jido.Flow` path and in a live Jido Agent.
 
-This package uses the current local V3 checkouts. It is an initial development
-release. It is not yet a Hex release.
+This package implements the **Jido SCXML 1.0 Profile**. It does not claim full
+W3C SCXML processor conformance. The profile has finite work limits, a restricted
+XML input, local allowlisted targets, and Jido commit timing. Use
+`Jido.Statechart.capabilities/0` to read the machine-readable profile.
 
-## Supported behavior
+The package is in V3 integration. Its default dependencies are local sibling
+paths. Do not publish the package until the separate Hex dependency gate passes.
 
-- Atomic, compound, and final states with stable string IDs.
-- Explicit initial states and one active path from root to leaf.
-- Guarded transitions, entry actions, exit actions, and transition actions.
-- External, internal descendant, and targetless transitions.
-- Exact event identities, SCXML event descriptors, eventless transitions,
-  and FIFO internal events.
-- Compound completion events named `done.state.<state-id>`.
-- Deterministic transition priority, traces, and execution counts.
-- Fixed upper limits, typed errors, and atomic failure of a macrostep.
-- Pure application guards and reducers selected through trusted string IDs.
-- Explicit effect requests and trusted builders for Jido Directives.
-- One generic Step Action, normal Jido Agent definitions, and compatible
-  checkpoints with definition fingerprints.
-- An Elixir DSL, data compiler, and restricted SCXML/XML compiler that produce
-  the same normalized model.
+## Local setup
 
-Parallel states, history states, expression languages, timers,
-invoked services, and W3C conformance are outside this release. Unknown fields
-and unsupported state kinds cause a compile error. See
-[the SCXML profile](guides/scxml.md).
-
-## Local installation
-
-Keep this repository beside `jido`, `jido_action`, `jido_signal`, and `zoi`.
-The local Jido checkout uses changes to Zoi state validation. This package
-selects that same Zoi source to prevent a dependency conflict.
+Keep `jido_statechart` beside `jido`, `jido_action`, `jido_signal`, and `zoi`.
+Then run:
 
 ```sh
-cd jido_statechart
 mix deps.get
 mix quality
-mix test --cover --warnings-as-errors
-mix docs --warnings-as-errors
 ```
 
-See [the tested source versions](guides/architecture.md#tested-source-versions).
-Current Jido and Action commits are local and have not reached the public
-upstream repositories. Public CI must use published commits that contain the
-same V3 contracts. The manual CI workflow takes those commit refs as inputs.
+See [Contribution](CONTRIBUTING.md) for the exact tested source commits and all
+release checks.
 
-Before a Hex release, select published compatible V3 dependencies, replace the
-local paths with normal version requirements, and repeat the integration checks.
+## Direct Flow API
 
-## Pure data API
+Use the direct API for a pure, bounded macrostep. It does not send external
+Signals, start timers, start children, reconcile operations, or persist state.
+It returns the next stable session and ordered intent records to the caller.
 
 ```elixir
 alias Jido.Statechart
-alias Jido.Statechart.Event
+alias Jido.Statechart.{Limits, Profile, Registry, SCXML, Session}
 
-chart = Statechart.compile!(%{
-  id: "door",
-  initial: "closed",
-  states: [
-    %{id: "closed", transitions: [%{event: "open", target: "opened"}]},
-    %{id: "opened", transitions: [%{event: "close", target: "closed"}]}
-  ]
-})
+chart =
+  "examples/door.scxml"
+  |> File.read!()
+  |> SCXML.compile!(id: "door", source_uri: "examples/door.scxml")
 
-{:ok, start} = Statechart.init(chart)
-{:ok, event} = Event.new("open")
-{:ok, result} = Statechart.step(chart, start.instance, event)
-result.instance.configuration.active
+registry = Registry.new!(%{version: "door-registry-1", entries: []})
+limits = Limits.default()
+
+session =
+  Session.new!(%{
+    id: "door-direct",
+    incarnation: "door-direct-1",
+    chart_fingerprint: chart.fingerprint,
+    profile_version: Profile.version(),
+    registry_version: registry.version,
+    registry_digest: registry.digest,
+    limits_digest: Limits.digest(limits),
+    invocation_remaining_descendants: limits.total_descendants
+  })
+
+{:ok, initialized} = Statechart.initialize(chart, session, registry)
+{:ok, result} = Statechart.step(chart, initialized.session, %{name: "door.open"}, registry)
+
+result.session.configuration
 # => ["opened"]
 ```
 
-The compiler accepts known field names as fixed atoms or strings. State,
-event, guard, reducer, and effect IDs must be strings. External input cannot
-create atoms, select modules, or supply executable code.
+The input session is unchanged when a macrostep fails. An unhandled external
+event is a successful stable no-op. The result contains a stable session,
+ordered intents, a redacted trace, and operation counts.
 
-## Jido Agent DSL
+## Live Agent and Plugin API
+
+Use the live API when Jido must commit state, dispatch external work, reconcile
+unknown outcomes, persist state, or own child processes. A chart module owns the
+compiled chart and its trusted Registry. An ordinary Jido Agent uses the
+Statechart Agent extension.
 
 ```elixir
-defmodule MyApp.Door do
-  use Jido.Statechart.Agent, name: "door"
+defmodule MyApp.DoorChart do
+  @path Path.expand("examples/door.scxml")
+  @external_resource @path
+  @chart @path |> File.read!() |> Jido.Statechart.SCXML.compile!(id: "door")
+  @registry Jido.Statechart.Registry.new!(%{version: "door-registry-1", entries: []})
 
-  statechart id: "door", version: "1", initial: "closed" do
-    state "closed" do
-      transition "open", target: "opened"
-    end
+  use Jido.Statechart.Chart, chart: @chart, registry: @registry
+end
 
-    state "opened" do
-      transition "close", target: "closed"
-    end
+defmodule MyApp.DoorAgent do
+  use Jido.Agent,
+    name: "door",
+    extensions: [Jido.Statechart.Agent.Extension]
+
+  agent do
+    schema(Zoi.object(%{label: Zoi.string() |> Zoi.default("door")}))
+  end
+
+  routes do
+    route("door.open", statechart: MyApp.DoorChart)
   end
 end
 
-agent = MyApp.Door.new!()
-signal = Jido.Signal.new!("open", %{}, source: "/example")
-{:ok, candidate, []} = MyApp.Door.cmd(agent, signal)
+{:ok, jido} = Jido.start_link(name: :my_app, namespace: "my-app")
+{:ok, server} = Jido.start_agent(:my_app, MyApp.DoorAgent, id: "front-door")
+
+# This reserved Turn is required before any business Signal.
+{:ok, _agent} = Jido.Statechart.Agent.initialize(server)
+
+signal = Jido.Signal.new!("door.open", %{}, id: "door-input-1", source: "/example")
+{:ok, agent} = Jido.AgentServer.call(server, signal)
+agent.state.statechart.session.configuration
+# => ["opened"]
 ```
 
-`new/1` creates an ordinary Jido Agent with a `"new"` chart configuration.
-The first Signal runs initial entry actions and initialization transitions
-before its external event. All work uses one macrostep budget and one Turn.
-Initialization effects are returned with the Turn. A failed first event
-leaves the Agent uninitialized.
+Input and delivery are at least once. The Plugin keeps recent Signal IDs in a
+bounded FIFO window. The default window is 1,024 IDs and the allowed range is
+1 through 100,000. An ID that leaves this window can run again. This window is
+not a durable idempotency record for a receiver.
 
-To run the same Agent in OTP, start a normal Jido instance and use
-`Jido.start_agent/3` and `Jido.AgentServer.call/3`. This package does not
-implement another AgentServer.
+The Plugin commits intent before it dispatches external work. A communication
+failure or unknown result is stored and reported by a later correlated Turn. It
+does not roll back the macrostep. A retry keeps the same operation ID. Each
+external target must use that ID for durable idempotency.
 
-## SCXML / XML input
+## Safety and lifecycle rules
 
-Add `{:saxy, "~> 1.6"}` to the consumer for XML support. Compile UTF-8 XML
-bytes once:
+- XML, Signal data, and stored state cannot select modules or create atoms.
+- A trusted, versioned Registry provides expressions, Actions, targets, and
+  invocation capabilities. Each session binds its Registry and limits digests.
+- Runtime-owned Signals need a short-lived proof. Proof values and proof secrets
+  are never public API and must not enter logs, diagnostics, traces, inspection,
+  or persisted state.
+- Completed sessions stay available for inspection. With `stop_on_done: true`,
+  the Agent stops only after external and child cleanup is confirmed.
+- SCXML invocation starts a local child statechart. The Jido invocation extension
+  starts an allowlisted local Jido Agent. Depth, descendants, pending operations,
+  retained terminal records, and runtime work are bounded.
+- Checkpoints bind the chart fingerprint, runtime protocol, profile, data model,
+  Registry manifest, limits, and duplicate-window contract. Incompatible state
+  fails before runtime work starts.
 
-```elixir
-chart = Jido.Statechart.SCXML.compile!(File.read!("charts/door.scxml"))
-```
+See [Runtime](guides/runtime.md) for the complete commit, persistence, delivery,
+cleanup, and child contracts.
 
-An Agent can use the same format at module compile time:
+## SCXML profile
 
-```elixir
-defmodule MyApp.XMLDoor do
-  use Jido.Statechart.Agent, name: "xml_door"
+The profile supports compound and parallel state, final state, shallow and deep
+history, multi-target transitions, completion events, the null data model, the
+restricted Jido data model, executable content, local sends, timers, and local
+invocation. It does not evaluate `<script>`, ECMAScript, or XPath. It does not
+fetch external data or content. It does not treat inline invoke content as an
+executable SCXML document, and it does not implement the BasicHTTP or SCXML
+Event I/O Processors or remote invocation. Invoke input stays ordered portable
+metadata; it is not injected or filtered against a child SCXML top-level data
+model. Generated invoke IDs and `_event` field names use documented Jido forms.
 
-  @external_resource Path.join(__DIR__, "door.scxml")
-  statechart_xml File.read!(@external_resource)
-end
-```
+Selected unchanged W3C Implementation Report inputs provide profile evidence for
+assertions 355, 403, and 436. The report states that it is interoperability
+evidence, not a conformance test. See [SCXML profile](guides/scxml.md) and
+[Verification](guides/verification.md).
 
-The adapter supports nested states, transitions, trusted guard and action IDs,
-entry and exit handlers, raised events, and effect requests. It rejects DTDs,
-external entities, scripts, and unsupported elements. See the
-[supported SCXML profile](guides/scxml.md) and [example](examples/scxml.exs).
+## Guides and examples
 
-## Trusted behavior
+- [Architecture and ownership](guides/architecture.md)
+- [Semantic rules and limits](guides/semantics.md)
+- [SCXML profile](guides/scxml.md)
+- [Live runtime contract](guides/runtime.md)
+- [Verification and W3C evidence](guides/verification.md)
+- [Direct door example](examples/door.exs)
+- [Direct and live parallel example](examples/parallel_approval.exs)
 
-A guard has arity 2: `(data, event) -> boolean`. A reducer has arity 3:
-`(data, event, params) -> {:ok, next_data}`. A reducer can also return
-`{:ok, next_data, requests}`. Requests must be internal `Event` values or
-`Effect` values.
-
-```elixir
-def registry do
-  %Jido.Statechart.Registry{
-    guards: %{"allowed" => fn data, _event -> data["allowed"] == true end},
-    reducers: %{
-      "count" => fn data, _event, _params ->
-        {:ok, Map.update(data, "count", 1, &(&1 + 1))}
-      end
-    }
-  }
-end
-```
-
-Declare this function inside an Agent module to replace its empty registry.
-Use `guard: "allowed"` and `actions: ["count"]` in transitions.
-
-Callbacks must be pure, deterministic, and bounded. They must not use network
-calls, files, time, randomness, process messages, or external writes. The engine
-checks callback results and call counts. It cannot prove purity or stop an
-infinite loop inside application code. Use Jido execution timeouts for the live
-runtime, and use only trusted bounded callbacks in the pure API.
-
-## Effects and checkpoints
-
-`%{effect: "notify", data: %{...}}` produces an explicit effect request.
-An Agent defines `effects/0` as a map of string IDs to pure builders. Each builder
-receives one `Jido.Statechart.Effect` and returns `{:ok, directive}`. Jido
-validates the Directive before commit and dispatches it after commit. A missing
-or invalid builder fails the Turn. See [the example](examples/approval.exs).
-
-Use `Jido.Agent.checkpoint/2` and `Jido.Agent.restore/3` for DSL Agents.
-The stored payload contains mutable state and its fingerprint. Restore uses
-the current application module and does not run chart actions.
-
-Use `Jido.Statechart.Checkpoint.dump/2` and `load/2` for pure instances.
-For a data-built generic Agent, pass its trusted Agent definition explicitly:
-
-```elixir
-{:ok, checkpoint} = Jido.Agent.checkpoint(agent)
-{:ok, restored} = Jido.Agent.restore(Jido.Statechart.Agent, checkpoint, %{
-  statechart_definition: trusted_agent_definition
-})
-```
-
-A generic data-built Agent needs that context for restore. Use the DSL or an
-application-owned behavior module for automatic Server persistence. Stored
-data never supplies an executable module or behavior registry.
-
-Change the chart `version` when application callback behavior changes. Change
-the Agent `vsn` when its state schema or checkpoint contract changes. A hash of
-structural data cannot detect an application code change with the same IDs.
-Fingerprints check compatibility. They are not a signature or an authorization
-mechanism.
-
-## Guides
-
-- [Architecture and package boundaries](guides/architecture.md)
-- [Execution rules, data model, and limits](guides/semantics.md)
-- [SCXML input and supported profile](guides/scxml.md)
-- [Contribution](CONTRIBUTING.md)
-- [Verification results](guides/verification.md)
-
-License: Apache-2.0. See [LICENSE](LICENSE).
+Library license: Apache-2.0. The selected W3C fixtures use BSD-3-Clause and
+have their license notice in
+`test/fixtures/w3c/LICENSE`.

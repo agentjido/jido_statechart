@@ -14,6 +14,7 @@ defmodule Jido.Statechart.ProfileTest do
     first = Profile.manifest()
     second = Profile.manifest()
 
+    assert Profile.version() == "jido-scxml-1.0/profile-2"
     assert first == second
     assert first["profile"] == Profile.version()
     assert is_binary(first["digest"])
@@ -27,6 +28,60 @@ defmodule Jido.Statechart.ProfileTest do
              first["features"],
              &(is_binary(&1["evidence_key"]) and &1["evidence_key"] != "")
            )
+
+    feature_index = Map.new(first["features"], &{&1["id"], &1})
+    assert feature_index["scxml_element"]["assertions"] == ["355", "576"]
+    assert feature_index["null_datamodel"]["assertions"] == ["436"]
+    assert feature_index["in_predicate"]["w3c_section"] == "5.9.1"
+    assert feature_index["in_predicate"]["assertions"] == ["310", "436"]
+    assert feature_index["event_descriptor_matching"]["assertions"] == ["396", "399"]
+    assert feature_index["transition_external"]["assertions"] == ["504", "506", "533"]
+    assert feature_index["transition_internal"]["assertions"] == ["505", "506", "533"]
+    assert feature_index["transition_targetless"]["assertions"] == ["503"]
+    assert feature_index["transition_multi_target"]["assertions"] == []
+    assert feature_index["transition_eventless"]["assertions"] == ["419"]
+    assert feature_index["remote_invocation"]["assertions"] == []
+    assert feature_index["executable_content_order"]["assertions"] == ["158"]
+    assert feature_index["executable_content_abort_on_error"]["assertions"] == ["159"]
+    assert feature_index["invoke_idlocation_assignment"]["assertions"] == ["223"]
+    assert feature_index["invoke_generated_id_form"]["assertions"] == ["224"]
+    assert feature_index["invoke_generated_id_uniqueness"]["assertions"] == ["225"]
+
+    assert feature_index["invoke_data_model_injection"]["assertions"] == [
+             "240",
+             "243",
+             "244",
+             "245"
+           ]
+
+    assert feature_index["invoke_input_metadata"]["assertions"] == ["241"]
+    assert feature_index["event_system_field_shape"]["assertions"] == ["330"]
+    assert feature_index["event_system_type"]["assertions"] == ["331"]
+    assert feature_index["event_system_send_id"]["assertions"] == ["332", "333"]
+    assert feature_index["event_system_origin"]["assertions"] == ["335"]
+    assert feature_index["event_system_origin_type"]["assertions"] == ["336", "337"]
+    assert feature_index["event_system_invoke_id"]["assertions"] == ["338", "339"]
+    assert feature_index["event_system_name"]["assertions"] == ["342"]
+
+    assert feature_index["scxml_event_io_processor"]["assertions"] == [
+             "253",
+             "189",
+             "190",
+             "191",
+             "192",
+             "193",
+             "347",
+             "348",
+             "349",
+             "350",
+             "351",
+             "352",
+             "354",
+             "495",
+             "496",
+             "500",
+             "501"
+           ]
 
     assert :ok = Jido.PortableTerm.validate(first, :manifest)
   end
@@ -44,6 +99,30 @@ defmodule Jido.Statechart.ProfileTest do
              })
 
     assert_raise ArgumentError, fn -> String.to_existing_atom(status) end
+  end
+
+  test "profile feature validation covers text status and malformed input shapes" do
+    attrs = %{
+      id: :test_feature,
+      status: "supported",
+      w3c_section: "1.0",
+      assertions: ["one"],
+      evidence_key: "profile:test_feature"
+    }
+
+    assert {:ok, %Profile.Feature{status: :supported}} = Profile.Feature.new(attrs)
+
+    assert {:error, %Diagnostic{code: :invalid_profile_feature, path: [:profile]}} =
+             Profile.Feature.new(:invalid)
+
+    assert {:error, %Diagnostic{code: :invalid_profile_feature, path: [:profile, :id]}} =
+             Profile.Feature.new(%{attrs | id: "test_feature"})
+
+    assert {:error, %Diagnostic{code: :invalid_profile_status, path: [:profile, :status]}} =
+             Profile.Feature.new(%{attrs | status: 1})
+
+    assert {:error, %Diagnostic{code: :invalid_profile_feature, path: [:profile, :assertions]}} =
+             Profile.Feature.new(%{attrs | assertions: "one"})
   end
 
   test "each limit accepts its boundaries and rejects the first value outside them" do

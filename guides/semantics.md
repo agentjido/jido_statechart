@@ -1,135 +1,119 @@
-# Execution Rules
+# Semantic Rules
 
-## Definition input
+## Configuration
 
-A chart has `id`, `version`, `initial`, `states`, and optional `limits` fields.
-The default version is `"1"`. States form a flat list with explicit parent IDs.
-Top-level states have no parent. The chart initial ID must name a top-level
-state. A compound state must name one immediate child as its initial state.
+A session configuration is an ordered set of active atomic or final state IDs.
+It can contain one state for a compound branch and one state for each parallel
+region. The compiler and session validator reject illegal configurations.
 
-A state has `id`, `parent`, `type`, `initial`, `entry`, `exit`, and `transitions`
-fields. The default type is `atomic`. Supported types are `atomic`, `compound`,
-and `final`. Atomic and final states have no children. Final states have no
-transitions. Final entry and exit actions are permitted.
-
-A transition has `event`, `target`, `guard`, `actions`, `priority`, `kind`, and `event_mode`
-fields. A missing event means an eventless transition. A missing target means
-an action-only transition. The default priority is 0. It must be an integer
-from -1,000,000 through 1,000,000. The default kind is `external`.
-
-Actions use one of these forms:
-
-```elixir
-"reducer-id"
-%{id: "reducer-id", params: %{...}}
-%{raise: "internal-event-id", data: %{...}}
-%{effect: "effect-id", data: %{...}}
-```
-
-Action parameters and request data must be bounded plain maps. Guards use
-trusted IDs. There is no string expression evaluator.
+The profile supports atomic, compound, parallel, final, shallow-history, and
+deep-history states. It supports explicit and default initial selection,
+multi-target transitions across legal parallel regions, internal descendant
+transitions, external transitions, and targetless transitions.
 
 ## Transition selection
 
-1. Search from the active leaf toward the root.
-2. At each source, inspect matching transitions in descending priority order.
-3. Use declaration order when priorities are equal.
-4. Select the first transition whose guard returns `true`.
-5. Search the parent when no transition at that source is enabled.
+For one event, the kernel finds enabled transitions from each active atomic
+state toward its ancestors. A descendant transition has priority over an
+ancestor transition. The kernel then removes conflicts and uses document order
+to select the optimal enabled set.
 
-A deeper enabled source wins over an ancestor, even when the ancestor has a
-higher priority. The default `event_mode` is `exact`: events match complete
-strings. The `scxml` mode supports dot prefixes, descriptor alternatives, and
-wildcards. The XML compiler uses that mode. See the SCXML guide.
+XML event descriptors use case-sensitive dot tokens. `order` matches `order`
+and `order.created`. `order.*` has the same prefix rule. `*` matches any named
+event. A missing event means an eventless transition.
 
-An unhandled external event fails the macrostep. An unhandled internal event
-is removed from the queue and recorded in the trace.
+An unhandled external event returns a successful stable no-op. An unhandled
+internal event, including an error event, is removed by the normal event rules.
 
-## Exit and entry
+## Microsteps and macrosteps
 
-An external transition exits states from leaf toward its transition boundary.
-Exit actions run before transition actions. Entry then runs from the boundary
-toward the target, followed by explicit initial descendants.
+One microstep does this work in order:
 
-The boundary is the least common ancestor that is a proper ancestor of both
-source and target. When source and target are in separate top-level states,
-the boundary is outside the chart. An external self transition exits and
-reenters the source. A transition to an ancestor exits and reenters that
-ancestor, then follows its initial state.
+1. Exit all states in exit order and run their exit content.
+2. Run selected transition content in document order.
+3. Enter all states in entry order and run entry and initial content.
 
-An internal targeted transition must have a compound source and a strict
-descendant target. It retains the source and replaces its active descendants.
-A targetless transition retains the whole active path and runs only its actions.
+A macrostep starts with initialization or one external event. It then takes all
+enabled eventless transitions and processes internal events in FIFO order. It
+stops when no eventless transition is enabled and the internal queue is empty.
+It also stops with an error when a configured limit is reached.
 
-When a final state with a parent is entered, the engine raises
-`done.state.<parent-id>`. That event uses the normal internal queue. A top-level
-final state marks the chart `done`. A nested final state completes its parent;
-it does not mark the whole chart done. No automatic transition is added to a
-completed compound state.
+Entering a final child adds `done.state.<parent-id>` to the internal queue.
+Parallel completion occurs only after every region is final. Entering a
+top-level final state completes the session and performs terminal exit. A
+completed session has no active configuration.
 
-External input and authored raise actions cannot use reserved completion names
-or names beginning with `$`. Internal lifecycle events use those names.
-Trusted reducer callbacks can return internal Event values.
+## Data models and executable content
 
-## Run to completion
+The null data model supports its SCXML restrictions and `In(state_id)`. It does
+not provide application data or source evaluation.
 
-Initialization enters the chart initial path and settles it. For one external
-event, the engine applies its selected transition and then repeats these steps:
+The Jido data model uses portable values, trusted expression aliases, bounded
+`Jido.Expr` values, string-keyed locations, and `In(state_id)`. It does not
+evaluate Elixir, JavaScript, XPath, or other text as code.
 
-1. Take an enabled eventless transition, if present.
-2. Otherwise take the next internal event in FIFO order.
-3. Stop when no eventless transition is enabled and the queue is empty.
+The profile supports `datamodel`, `data`, `donedata`, `param`, `content`,
+`raise`, `if`, `elseif`, `else`, `foreach`, `assign`, `log`, `send`, `cancel`,
+`invoke`, `finalize`, entry content, exit content, transition content, initial
+content, and history content. `<script>` is not supported.
 
-Eventless guards and reducers receive the most recently processed event.
-Initialization uses the internal `$init` event. Queued events retain their own
-data. Actions append raised events to the queue in action order.
+An allowlisted Jido Action can run as executable content. It receives a minimal
+package-owned context. It must return portable data and no effects, streams,
+continuations, or opaque terms. The application must keep the Action
+deterministic and bounded.
 
-A stable result contains no queued internal event. The trace is deterministic
-for the same definition, data, external event, and trusted callback behavior.
-It omits domain payloads and records state, action, guard, event, and effect IDs.
+Authored expression and executable-content failures add `error.execution` when
+the session is still valid. An invalid configuration, a contract mismatch, or
+limit exhaustion is fatal for that macrostep.
 
-The engine builds all changes in a local candidate. If any limit, guard,
-reducer, request, or validation fails, it returns `{:error, %Error{...}}`.
-The input instance remains unchanged. It does not return partial effects.
+## Direct result contract
 
-## Fixed limits
+`Jido.Statechart.initialize/3` and `step/4` run one atomic Flow execution. A
+successful `Result` contains:
 
-Definitions can lower these limits. They cannot raise them or supply duplicate
-field aliases.
+- the next stable session;
+- ordered operation intent;
+- a redacted deterministic trace;
+- operation counts.
 
-| Field | Maximum | Bounds |
-| --- | ---: | --- |
-| `states` | 512 | Defined states |
-| `depth` | 32 | State hierarchy depth |
-| `active_states` | 32 | Active path length |
-| `transitions` | 4,096 | Defined transitions and transitions in one macrostep |
-| `actions_per_list` | 256 | Entry, exit, or transition action list |
-| `action_calls` | 512 | Reducer and built-in action calls; total effects |
-| `internal_events` | 128 | Raised events per macrostep, including completion events |
-| `macrostep` | 1,024 | Interpreter work operations |
-| `expression_bytes` | 4,096 | UTF-8 bytes in each identity or behavior reference |
-| `definition_bytes` | 1,048,576 | External-term size of authoring data and normalized data |
-| `data_nodes` | 65,536 | Nodes in each data value |
-| `data_bytes` | 1,048,576 | Scalar bytes in each data value |
+The direct path does not start external work. If the macrostep fails, it does
+not return a partial result and it does not change the input session.
 
-Data nesting is limited to 64 levels. Integers must fit in a signed 64-bit
-value. Data accepts strings, floats, integers, fixed atoms, plain maps with
-string or atom keys, and proper lists. It rejects functions, processes,
-references, ports, structs, tuples, and non-byte bitstrings. Use strings for
-names that can be introduced by external data. Fixed application atoms are
-accepted but can require trusted modules to be loaded on another BEAM node.
+## Limits
 
-Work counts include state searches, transition inspections, guard calls,
-SCXML descriptor checks, transition execution, entry, exit, actions, requests,
-and internal queue
-consumption. Traces, effect lists, and queues are bounded by those counts.
-Definition validation has separate structural and data bounds.
+`Jido.Statechart.Limits.bounds/0` is the authority for allowed values.
+`Limits.default/0` returns the default contract. The session stores a digest of
+this contract. A restore or execution with different limits fails.
 
-A budget counts engine work. It cannot count instructions inside a trusted
-callback. Application callbacks and Directive builders must terminate within
-the application's execution policy. The pure API has no wall-clock scheduler.
-Jido execution timeout and cancellation policy apply when running a Turn.
+| Limit | Default | Hard maximum |
+| --- | ---: | ---: |
+| XML bytes | 1,048,576 | 16,777,216 |
+| XML depth | 64 | 256 |
+| XML attributes per element | 64 | 512 |
+| XML nodes | 10,000 | 100,000 |
+| XML text bytes | 1,048,576 | 8,388,608 |
+| Expression steps | 10,000 | 1,000,000 |
+| Microsteps per macrostep | 1,000 | 10,000 |
+| Internal queued events | 10,000 | 100,000 |
+| Trace entries | 10,000 | 100,000 |
+| Data bytes | 1,048,576 | 16,777,216 |
+| External intent | 1,000 | 10,000 |
+| Timer horizon in milliseconds | 2,678,400,000 | 31,536,000,000 |
+| Invocation depth | 16 | 64 |
+| Total descendants | 1,000 | 100,000 |
+| Pending sends | 1,000 | 100,000 |
+| Pending timers | 1,000 | 100,000 |
+| Pending invocations | 1,000 | 100,000 |
+| Retained terminal records | 10,000 | 1,000,000 |
+| Session bytes | 8,388,608 | 134,217,728 |
+| Reconciliation batch | 100 | 10,000 |
+| Runtime concurrency | 64 | 10,000 |
+| Runtime-generated Turns per minute | 1,000 | 1,000,000 |
 
-`Result.stats` exposes work, transition, guard, action, internal-event, and
-effect counts. A failure identifies its limit in `Error.details` when the
-failure occurs during interpretation.
+The Plugin also bounds its duplicate window to 1 through 100,000 IDs, its
+reconciliation interval to 10 through 60,000 milliseconds, its retry count to
+1 through 100, and its initial retry delay to 1 through 60,000 milliseconds.
+
+Limits count package work. They cannot prove that trusted application code will
+terminate. Application Actions and capability adapters must have their own time
+and resource policy.

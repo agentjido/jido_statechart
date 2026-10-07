@@ -5,6 +5,12 @@ defmodule Jido.Statechart.SCXML.Handler do
   alias Jido.Statechart.{Diagnostic, Limits}
   alias Jido.Statechart.SCXML.Namespaces
 
+  @safe_path_segments ~w(
+    scxml state parallel final history initial transition onentry onexit
+    datamodel data donedata param content raise if elseif else foreach assign
+    log send cancel invoke finalize script action
+  )
+
   @type state :: %{
           limits: Limits.t(),
           source_uri: String.t() | nil,
@@ -242,12 +248,12 @@ defmodule Jido.Statechart.SCXML.Handler do
 
   defp path_segment(raw_name) do
     name = local(raw_name)
-    if byte_size(name) <= 128, do: name, else: utf8_prefix(name, 128)
-  end
 
-  defp utf8_prefix(name, bytes) do
-    candidate = binary_part(name, 0, bytes)
-    if String.valid?(candidate), do: candidate, else: utf8_prefix(name, bytes - 1)
+    cond do
+      name in @safe_path_segments -> name
+      String.valid?(name) -> "$unrecognized"
+      true -> "$invalid"
+    end
   end
 
   defp source(state, path) do

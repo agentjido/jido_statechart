@@ -446,17 +446,24 @@ defmodule Jido.Statechart.ContractValidationTest do
 
   test "profile has one stable row for each declared feature" do
     expected = ~w(
-      scxml_element state_atomic state_compound state_parallel state_final initial_element
+      scxml_element state_atomic state_compound state_parallel state_final scxml_initial_default
+      initial_element
       history_shallow history_deep transition_external transition_internal transition_targetless
-      transition_multi_target transition_eventless onentry_element onexit_element datamodel_element
-      data_element donedata_element param_element content_element raise_element if_element
+      transition_multi_target transition_eventless event_descriptor_matching onentry_element
+      onexit_element datamodel_element data_element donedata_element param_element content_element
+      raise_element if_element
       elseif_element else_element foreach_element assign_element log_element send_element
-      cancel_element invoke_scxml_element invoke_jido_element finalize_element invoke_autoforward
-      binding_early binding_late internal_event_queue run_to_completion null_datamodel
-      jido_datamodel in_predicate system_variables jido_action_extension script_element
+      cancel_element executable_content_order executable_content_abort_on_error
+      invoke_scxml_element invoke_idlocation_assignment invoke_generated_id_form
+      invoke_generated_id_uniqueness invoke_data_model_injection invoke_input_metadata
+      invoke_jido_element finalize_element invoke_autoforward
+      binding_early binding_late internal_event_queue run_to_completion optimal_transition_set
+      null_datamodel jido_datamodel in_predicate system_variables event_system_field_shape
+      event_system_type event_system_send_id event_system_origin event_system_origin_type
+      event_system_invoke_id event_system_name jido_action_extension script_element
       external_data_source external_content_source ecmascript_datamodel xpath_datamodel
-      basic_http_event_io remote_invocation bounded_macrostep restricted_xml commit_then_dispatch
-      post_commit_child_lifecycle dom_binding
+      basic_http_event_io scxml_event_io_processor remote_invocation bounded_macrostep
+      restricted_xml commit_then_dispatch post_commit_child_lifecycle dom_binding
     )a
 
     assert Enum.map(Profile.features(), & &1.id) == expected

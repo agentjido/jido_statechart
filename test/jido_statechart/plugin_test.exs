@@ -465,17 +465,29 @@ defmodule Jido.Statechart.PluginTest do
              Plugin.dump(Plugin.state(session, ["one", "two", "three"]), dump_context, @options)
   end
 
-  test "the declared version-one migration is pure and idempotent" do
-    fixture = checkpoint_fixture(1)
+  test "profile-one checkpoints remain frozen and are rejected under profile two" do
+    historical_fingerprint = "c33ab2f15a777fcca2ebccd8e3fa1fcb4a732996b49a94026097263b02e486e8"
 
-    assert {:ok, current} = Plugin.migrate(fixture, @options)
-    assert current["checkpoint_version"] == Plugin.checkpoint_version()
-    assert {:ok, ^current} = Plugin.migrate(current, @options)
-    refute current["session"] == fixture["session"]
-    assert current["recent_signal_ids"] == fixture["signal_ids"]
+    for version <- 1..5 do
+      fixture = checkpoint_fixture(version)
+      session = fixture["session"]
 
-    assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
-    assert_frozen_session(state, current["session"], :active)
+      assert session["profile_version"] == "jido-scxml-1.0/profile-1"
+      assert session["chart_fingerprint"] == historical_fingerprint
+
+      if version > 1 do
+        assert fixture["profile_version"] == "jido-scxml-1.0/profile-1"
+        assert fixture["chart_fingerprint"] == historical_fingerprint
+      end
+
+      assert {:error,
+              {:statechart_checkpoint_profile_mismatch, "jido-scxml-1.0/profile-1",
+               "jido-scxml-1.0/profile-2"}} = Plugin.migrate(fixture, @options)
+
+      assert {:error,
+              {:statechart_checkpoint_profile_mismatch, "jido-scxml-1.0/profile-1",
+               "jido-scxml-1.0/profile-2"}} = Plugin.load(fixture, context(:load), @options)
+    end
 
     assert {:error, {:unsupported_checkpoint_version, 0}} =
              Plugin.migrate(%{"checkpoint_version" => 0}, @options)
@@ -484,57 +496,69 @@ defmodule Jido.Statechart.PluginTest do
 
     assert {:error, :invalid_statechart_v1_checkpoint} =
              Plugin.migrate(
-               %{"checkpoint_version" => 1, "session" => nil, "signal_ids" => :invalid},
+               %{
+                 "checkpoint_version" => 1,
+                 "session" => %{"profile_version" => Profile.version()},
+                 "signal_ids" => :invalid
+               },
                @options
              )
   end
 
-  test "the frozen version-two checkpoint uses its declared migration" do
-    fixture = checkpoint_fixture(2)
-
-    assert {:ok, migrated} = Plugin.migrate(fixture, @options)
-    assert migrated["checkpoint_version"] == Plugin.checkpoint_version()
-    assert migrated["duplicate_window"] == 2
-    refute migrated["session"] == fixture["session"]
-    assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
-    assert_frozen_session(state, migrated["session"], :completed)
-  end
-
-  test "the frozen version-three checkpoint uses its declared migration" do
-    fixture = checkpoint_fixture(3)
-
-    assert {:ok, migrated} = Plugin.migrate(fixture, @options)
-    assert migrated["checkpoint_version"] == Plugin.checkpoint_version()
-    assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
-    assert_frozen_session(state, migrated["session"], :completed)
-  end
-
-  test "the frozen version-four checkpoint adds invocation context" do
-    fixture = checkpoint_fixture(4)
-
-    assert {:ok, migrated} = Plugin.migrate(fixture, @options)
-    assert migrated["checkpoint_version"] == Plugin.checkpoint_version()
-    assert migrated["session"]["invocation_depth"] == 0
-    assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
-    assert_frozen_session(state, migrated["session"], :completed)
-  end
-
-  test "the frozen current checkpoint loads without migration changes" do
-    fixture = checkpoint_fixture(5)
+  test "the frozen profile-two checkpoint loads without migration changes" do
+    fixture = checkpoint_fixture("profile_2")
 
     assert {:ok, ^fixture} = Plugin.migrate(fixture, @options)
     assert {:ok, state} = Plugin.load(fixture, context(:load), @options)
     assert_frozen_session(state, fixture["session"], :completed)
   end
 
-  test "current and legacy checkpoints explicitly preserve an empty session" do
-    current = checkpoint_fixture(5) |> Map.put("session", nil)
+  test "declared schema migrations preserve the current profile and chart identity" do
+    current = checkpoint_fixture("profile_2")
+
+    version_one = %{
+      "checkpoint_version" => 1,
+      "session" => current["session"],
+      "signal_ids" => current["recent_signal_ids"]
+    }
+
+    version_two =
+      current
+      |> Map.put("checkpoint_version", 2)
+      |> Map.delete("duplicate_window")
+
+    version_three = Map.put(current, "checkpoint_version", 3)
+
+    version_four =
+      checkpoint_fixture(4)
+      |> Map.put("profile_version", Profile.version())
+      |> Map.put("chart_fingerprint", BoundChart.chart().fingerprint)
+      |> put_in(["session", "profile_version"], Profile.version())
+      |> put_in(["session", "chart_fingerprint"], BoundChart.chart().fingerprint)
+
+    for legacy <- [version_one, version_two, version_three, version_four] do
+      assert {:ok, migrated} = Plugin.migrate(legacy, @options)
+      assert migrated["checkpoint_version"] == Plugin.checkpoint_version()
+      assert migrated["profile_version"] == Profile.version()
+      assert migrated["chart_fingerprint"] == BoundChart.chart().fingerprint
+      assert migrated["session"]["profile_version"] == Profile.version()
+      assert migrated["session"]["chart_fingerprint"] == BoundChart.chart().fingerprint
+      assert {:ok, state} = Plugin.load(legacy, context(:load), @options)
+      assert_frozen_session(state, migrated["session"], :completed)
+    end
+
+    assert {:ok, ^current} = Plugin.migrate(current, @options)
+  end
+
+  test "current checkpoints preserve an empty session and legacy profile is still rejected" do
+    current = checkpoint_fixture("profile_2") |> Map.put("session", nil)
     legacy = checkpoint_fixture(4) |> Map.put("session", nil)
 
     assert {:ok, %{session: nil}} = Plugin.load(current, context(:load), @options)
-    assert {:ok, migrated} = Plugin.migrate(legacy, @options)
-    assert migrated["checkpoint_version"] == Plugin.checkpoint_version()
-    assert migrated["session"] == nil
+
+    assert {:error,
+            {:statechart_checkpoint_profile_mismatch, "jido-scxml-1.0/profile-1",
+             "jido-scxml-1.0/profile-2"}} = Plugin.migrate(legacy, @options)
   end
 
   test "state validation rejects runtime handles and proof material" do
@@ -851,7 +875,9 @@ defmodule Jido.Statechart.PluginTest do
   end
 
   defp checkpoint_fixture(version) do
-    Path.join([__DIR__, "..", "fixtures", "checkpoints", "statechart_v#{version}.json"])
+    suffix = if is_integer(version), do: "v#{version}", else: version
+
+    Path.join([__DIR__, "..", "fixtures", "checkpoints", "statechart_#{suffix}.json"])
     |> File.read!()
     |> Jason.decode!()
   end

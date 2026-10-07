@@ -339,12 +339,15 @@ defmodule Jido.Statechart.Runtime.InvocationTest do
     assert session.operations == %{}
   end
 
-  test "invocation input keeps namelist and parameter order" do
+  test "invocation input preserves param and namelist metadata without SCXML data-model injection" do
     chart =
       SemanticFixture.chart(
         """
         <state id="root">
-          <invoke id="worker" type="scxml" src="child-chart" namelist="z a"/>
+          <invoke id="namelist-worker" type="scxml" src="child-chart" namelist="z a"/>
+          <invoke id="param-worker" type="scxml" src="child-chart">
+            <param name="copy" location="a"/>
+          </invoke>
         </state>
         """,
         datamodel: "jido"
@@ -354,12 +357,57 @@ defmodule Jido.Statechart.Runtime.InvocationTest do
     session = SemanticFixture.session(chart, registry: registry, data: %{"z" => 9, "a" => 1})
 
     assert {:ok, initialized} = Flow.initialize(chart, session, registry)
-    [invoke] = initialized.intents
+    [namelist_invoke, param_invoke] = initialized.intents
 
-    assert invoke.correlation["input"] == [
+    assert namelist_invoke.correlation["input"] == [
              %{"name" => "z", "value" => 9},
              %{"name" => "a", "value" => 1}
            ]
+
+    assert param_invoke.correlation["input"] == [%{"name" => "copy", "value" => 1}]
+    assert is_list(namelist_invoke.correlation["input"])
+    assert is_list(param_invoke.correlation["input"])
+    refute Map.has_key?(namelist_invoke.correlation, "child_data_model")
+    refute Map.has_key?(param_invoke.correlation, "child_data_model")
+  end
+
+  test "generated invoke IDs are distinct, deterministic, and assigned to idlocation" do
+    chart =
+      SemanticFixture.chart(
+        """
+        <datamodel><data id="first_id"/><data id="second_id"/></datamodel>
+        <state id="root">
+          <invoke type="scxml" src="child-chart" idlocation="first_id"/>
+          <invoke type="scxml" src="child-chart" idlocation="second_id"/>
+        </state>
+        """,
+        datamodel: "jido"
+      )
+
+    registry = fixture_registry("child-chart")
+
+    initialize = fn session_id ->
+      session =
+        SemanticFixture.session(chart,
+          id: session_id,
+          registry: registry,
+          data: %{"first_id" => nil, "second_id" => nil}
+        )
+
+      assert {:ok, result} = Flow.initialize(chart, session, registry)
+      {result.session, Enum.map(result.intents, & &1.correlation["invoke_id"])}
+    end
+
+    {first_session, first_ids} = initialize.("session-one")
+    {second_session, second_ids} = initialize.("session-two")
+
+    assert [first_id, second_id] = first_ids
+    assert first_id != second_id
+    assert first_ids == second_ids
+    assert String.starts_with?(first_id, "__jido_invoke_")
+    refute String.starts_with?(first_id, "root.")
+    assert first_session.data == %{"first_id" => first_id, "second_id" => second_id}
+    assert second_session.data == first_session.data
   end
 
   test "matching child finalize content runs before transition selection" do
