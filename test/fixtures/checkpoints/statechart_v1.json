@@ -1,0 +1,64 @@
+{
+  "checkpoint_version": 1,
+  "session": {
+    "chart_fingerprint": "c33ab2f15a777fcca2ebccd8e3fa1fcb4a732996b49a94026097263b02e486e8",
+    "completion_data": null,
+    "configuration": ["idle"],
+    "data": {},
+    "data_model_version": "1",
+    "generated_id_counter": 3,
+    "history": {},
+    "id": "session-1",
+    "incarnation": "incarnation-1",
+    "initialized_data_state_ids": ["root"],
+    "internal_queue": [],
+    "limits_digest": "4c46ace12ff041579f70587b23e4e768710a92c69c37e96ed3df59ccaa6d3a4d",
+    "limits_version": "1",
+    "operation_counter": 3,
+    "operation_tombstones": {
+      "op_v1_48e4fa9ad5c49dde75231b38d03fb17fbd3a2e117a92ee82ab0a8c2912107fe8": {
+        "due_at": null,
+        "generation": 1,
+        "id": "op_v1_48e4fa9ad5c49dde75231b38d03fb17fbd3a2e117a92ee82ab0a8c2912107fe8",
+        "identity_version": 1,
+        "kind": "send",
+        "outcome_digest": "93a9882501602bf1a8e0328344e06a1d765dda8736e5308321ce27b1ceab7aa6",
+        "payload_digest": "7ee2a31e476bdcd2c7c1008e831f7536e5d8a53edf7e39a0769877a9469af928",
+        "result_revision": 3,
+        "retention_class": "terminal",
+        "session_incarnation": "incarnation-1",
+        "state": "confirmed_complete",
+        "target": "timer:expiry"
+      }
+    },
+    "operations": {
+      "op_v1_1478ca3be05b92224d3bc2622bdc23f54425f808bdd5687608017e06630c4c0f": {
+        "attempt_count": 1,
+        "correlation": {},
+        "created_revision": 1,
+        "due_at": null,
+        "generation": 0,
+        "id": "op_v1_1478ca3be05b92224d3bc2622bdc23f54425f808bdd5687608017e06630c4c0f",
+        "identity_version": 1,
+        "kind": "send",
+        "payload_digest": "b4a8f2004204a45f555670630886971855bb02047daa96fd8d66fde8b979e37a",
+        "result": null,
+        "result_revision": null,
+        "retention_class": "active",
+        "session_incarnation": "incarnation-1",
+        "state": "result_unknown",
+        "target": "queue:orders"
+      }
+    },
+    "profile_version": "jido-scxml-1.0/profile-1",
+    "registry_digest": "14a8fac28fad4d04ac7306eaa7fb3982aa3376d05dd759c8b1029c9699a0611c",
+    "registry_version": "registry-1",
+    "revision": 4,
+    "revision_fence": 4,
+    "runtime_protocol_version": 1,
+    "schema_version": 1,
+    "status": "active",
+    "trace": []
+  },
+  "signal_ids": ["signal-old"]
+}

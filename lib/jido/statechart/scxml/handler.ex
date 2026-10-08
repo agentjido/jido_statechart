@@ -1,154 +1,294 @@
 defmodule Jido.Statechart.SCXML.Handler do
   @moduledoc false
-  import Jido.Statechart.SCXML.Validation, only: [ensure!: 3]
-  alias Jido.Statechart.SCXML.Security
+  @behaviour Saxy.Handler
 
-  @scxml "http://www.w3.org/2005/07/scxml"
-  @jido "urn:jido:statechart:1"
-  @xml "http://www.w3.org/XML/1998/namespace"
-  @xmlns "http://www.w3.org/2000/xmlns/"
+  alias Jido.Statechart.{Diagnostic, Limits}
+  alias Jido.Statechart.SCXML.Namespaces
 
-  def handle_event(:start_document, prolog, state) do
-    ensure!(
-      Keyword.get(prolog, :version, "1.0") == "1.0",
-      :unsupported_xml,
-      "Only XML 1.0 is supported"
-    )
+  @safe_path_segments ~w(
+    scxml state parallel final history initial transition onentry onexit
+    datamodel data donedata param content raise if elseif else foreach assign
+    log send cancel invoke finalize script action
+  )
 
-    encoding = prolog |> Keyword.get(:encoding, "UTF-8") |> String.upcase()
-    ensure!(encoding == "UTF-8", :unsupported_xml, "Only UTF-8 XML is supported")
-    {:ok, state}
+  @type state :: %{
+          limits: Limits.t(),
+          source_uri: String.t() | nil,
+          stack: [map()],
+          root: map() | nil,
+          nodes: non_neg_integer(),
+          attributes: non_neg_integer(),
+          text_bytes: non_neg_integer(),
+          error: Diagnostic.t() | nil
+        }
+
+  @spec initial(Limits.t(), String.t() | nil) :: state()
+  def initial(%Limits{} = limits, source_uri) do
+    %{
+      limits: limits,
+      source_uri: source_uri,
+      stack: [],
+      root: nil,
+      nodes: 0,
+      attributes: 0,
+      text_bytes: 0,
+      error: nil
+    }
   end
 
-  def handle_event(:start_element, {raw_name, attributes}, state) do
-    limits = state.limits
-    ensure!(state.elements < limits.elements, :limit_exceeded, "XML element limit exceeded")
-    ensure!(length(state.stack) < limits.depth, :limit_exceeded, "XML depth limit exceeded")
+  @impl true
+  def handle_event(_event, _data, %{error: %Diagnostic{}} = state), do: {:stop, state}
 
-    ensure!(
-      length(attributes) <= limits.attributes,
-      :limit_exceeded,
-      "XML attribute count limit exceeded"
-    )
+  def handle_event(:start_document, prolog, state) do
+    version = Keyword.get(prolog, :version) || "1.0"
+    encoding = Keyword.get(prolog, :encoding) || "UTF-8"
 
-    ensure!(state.stack != [] or state.root == nil, :invalid_xml, "XML requires one root element")
-    name!(raw_name, limits)
-
-    names =
-      Enum.map(attributes, fn {name, value} ->
-        name!(name, limits)
-        Security.characters!(value)
-
-        ensure!(
-          byte_size(value) <= limits.attribute_bytes,
-          :limit_exceeded,
-          "XML attribute byte limit exceeded"
+    cond do
+      version != "1.0" ->
+        stop(state, :unsupported_xml_version, "The Jido SCXML Profile accepts XML 1.0 only",
+          profile_feature: "restricted_xml"
         )
 
-        name
-      end)
+      String.upcase(encoding) != "UTF-8" ->
+        stop(state, :unsupported_encoding, "The Jido SCXML Profile accepts UTF-8 XML only",
+          profile_feature: "restricted_xml"
+        )
 
-    ensure!(length(names) == length(Enum.uniq(names)), :invalid_xml, "Duplicate XML attribute")
+      true ->
+        {:ok, state}
+    end
+  end
 
-    inherited =
-      case state.stack do
-        [%{namespaces: namespaces} | _] -> namespaces
-        [] -> %{"xml" => @xml}
-      end
+  def handle_event(:start_element, {raw_name, raw_attributes}, state) do
+    path = next_path(state, raw_name)
+    depth = length(state.stack) + 1
+    node_count = state.nodes + 1
+    attribute_count = state.attributes + length(raw_attributes)
 
-    namespaces = Enum.reduce(attributes, inherited, &namespace!/2)
-    name = expand!(raw_name, namespaces, true)
-    ensure!(supported?(name), :unsupported_xml, "Unsupported XML element: " <> raw_name)
+    cond do
+      state.stack == [] and state.root != nil ->
+        stop(state, :multiple_xml_roots, "XML must contain one root element", path: path)
 
-    attrs =
-      Enum.reduce(attributes, %{}, fn {key, value}, acc ->
-        if key == "xmlns" or String.starts_with?(key, "xmlns:") do
-          acc
-        else
-          key = expand!(key, namespaces, false)
-          ensure!(!Map.has_key?(acc, key), :invalid_xml, "Duplicate expanded XML attribute")
-          Map.put(acc, key, value)
-        end
-      end)
+      depth > state.limits.xml_depth ->
+        limit(
+          state,
+          :xml_depth_limit,
+          "XML depth limit is exceeded",
+          path,
+          state.limits.xml_depth
+        )
 
-    frame = %{raw_name: raw_name, name: name, attrs: attrs, children: [], namespaces: namespaces}
-    {:ok, %{state | stack: [frame | state.stack], elements: state.elements + 1}}
+      node_count > state.limits.xml_nodes ->
+        limit(state, :xml_node_limit, "XML node limit is exceeded", path, state.limits.xml_nodes)
+
+      attribute_count > state.limits.xml_attributes ->
+        limit(
+          state,
+          :xml_attribute_limit,
+          "XML attribute limit is exceeded",
+          path,
+          state.limits.xml_attributes
+        )
+
+      true ->
+        start_element(state, raw_name, raw_attributes, path, node_count, attribute_count)
+    end
   end
 
   def handle_event(:end_element, raw_name, %{stack: [frame | rest]} = state) do
-    ensure!(frame.raw_name == raw_name, :invalid_xml, "XML closing tag does not match")
-    node = %{name: frame.name, attrs: frame.attrs, children: Enum.reverse(frame.children)}
+    if frame.raw_name == raw_name do
+      node = %{
+        name: frame.name,
+        attributes: frame.attributes,
+        content: frame.content |> Enum.reverse() |> normalize_text(),
+        source: source(state, frame.path)
+      }
 
-    case rest do
-      [] ->
-        {:ok, %{state | stack: [], root: node}}
+      case rest do
+        [] ->
+          {:ok, %{state | stack: [], root: node}}
 
-      [parent | ancestors] ->
-        {:ok, %{state | stack: [%{parent | children: [node | parent.children]} | ancestors]}}
+        [parent | ancestors] ->
+          {:ok, %{state | stack: [append(parent, {:element, node}) | ancestors]}}
+      end
+    else
+      stop(state, :invalid_xml, "XML closing element does not match", path: frame.path)
     end
   end
 
-  def handle_event(:characters, text, state) do
-    Security.characters!(text)
+  def handle_event(:end_element, _raw_name, state),
+    do: stop(state, :invalid_xml, "XML closing element has no open element")
+
+  def handle_event(event, text, state) when event in [:characters, :cdata] do
     bytes = state.text_bytes + byte_size(text)
-    ensure!(bytes <= state.limits.text_bytes, :limit_exceeded, "XML text byte limit exceeded")
 
-    ensure!(
-      Regex.match?(~r/\A[ \t\r\n]*\z/, text),
-      :unsupported_xml,
-      "SCXML text content is not supported"
-    )
+    if bytes > state.limits.xml_text_bytes do
+      path =
+        case state.stack do
+          [frame | _] -> frame.path
+          [] -> []
+        end
 
-    {:ok, %{state | text_bytes: bytes}}
-  end
-
-  def handle_event(:cdata, _, _state),
-    do: ensure!(false, :unsupported_xml, "CDATA is not supported")
-
-  def handle_event(:end_document, _, state), do: {:ok, state}
-
-  defp supported?({@scxml, name}),
-    do: name in ["scxml", "state", "final", "transition", "initial", "onentry", "onexit", "raise"]
-
-  defp supported?({@jido, name}), do: name in ["action", "effect"]
-  defp supported?(_), do: false
-
-  defp name!(name, limits) do
-    ensure!(byte_size(name) <= limits.name_bytes, :limit_exceeded, "XML name byte limit exceeded")
-
-    ensure!(
-      Regex.match?(~r/\A[A-Za-z_][A-Za-z0-9_.-]*(?::[A-Za-z_][A-Za-z0-9_.-]*)?\z/, name),
-      :unsupported_xml,
-      "XML names must use the supported ASCII name syntax"
-    )
-  end
-
-  defp namespace!({"xmlns", uri}, acc) do
-    ensure!(uri not in [@xml, @xmlns], :invalid_xml, "Reserved namespace binding")
-    Map.put(acc, "", uri)
-  end
-
-  defp namespace!({"xmlns:" <> prefix, uri}, acc) do
-    ensure!(
-      prefix != "xmlns" and uri != "" and uri != @xmlns and
-        ((prefix == "xml" and uri == @xml) or (prefix != "xml" and uri != @xml)),
-      :invalid_xml,
-      "Invalid namespace binding"
-    )
-
-    Map.put(acc, prefix, uri)
-  end
-
-  defp namespace!(_, acc), do: acc
-
-  defp expand!(name, namespaces, element?) do
-    case String.split(name, ":") do
-      [local] ->
-        {if(element?, do: Map.get(namespaces, ""), else: nil), local}
-
-      [prefix, local] ->
-        ensure!(Map.has_key?(namespaces, prefix), :invalid_xml, "Unbound XML namespace prefix")
-        {namespaces[prefix], local}
+      limit(
+        state,
+        :xml_text_limit,
+        "XML text limit is exceeded",
+        path,
+        state.limits.xml_text_bytes
+      )
+    else
+      text(state, event, text, bytes)
     end
+  end
+
+  def handle_event(:end_document, _data, %{stack: [], root: root} = state) when root != nil,
+    do: {:ok, state}
+
+  def handle_event(:end_document, _data, state),
+    do: stop(state, :invalid_xml, "XML document is incomplete")
+
+  defp start_element(state, raw_name, raw_attributes, path, nodes, attributes) do
+    inherited =
+      case state.stack do
+        [frame | _] -> frame.namespaces
+        [] -> Namespaces.initial_scope()
+      end
+
+    with {:ok, namespaces, normal_attributes} <-
+           Namespaces.declarations(raw_attributes, inherited, path),
+         {:ok, name} <- Namespaces.expand(raw_name, namespaces, true, path),
+         {:ok, expanded_attributes} <-
+           expand_attributes(normal_attributes, namespaces, path) do
+      {stack, path} = bump_parent(state.stack, path)
+
+      frame = %{
+        raw_name: raw_name,
+        name: name,
+        attributes: expanded_attributes,
+        content: [],
+        namespaces: namespaces,
+        path: path,
+        child_counts: %{}
+      }
+
+      {:ok, %{state | stack: [frame | stack], nodes: nodes, attributes: attributes}}
+    else
+      {:error, diagnostic} -> {:stop, %{state | error: locate(diagnostic, state, path)}}
+    end
+  end
+
+  defp expand_attributes(attributes, namespaces, path) do
+    attributes
+    |> Enum.reduce_while({:ok, [], MapSet.new()}, fn {raw_name, value}, {:ok, acc, seen} ->
+      case Namespaces.expand(raw_name, namespaces, false, path) do
+        {:ok, name} ->
+          if MapSet.member?(seen, name) do
+            {:halt,
+             {:error,
+              Diagnostic.new(:duplicate_attribute, "Expanded XML attribute is duplicated",
+                path: path
+              )}}
+          else
+            attribute = %{name: name, value: value, raw_name: raw_name}
+            {:cont, {:ok, [attribute | acc], MapSet.put(seen, name)}}
+          end
+
+        {:error, _} = error ->
+          {:halt, error}
+      end
+    end)
+    |> case do
+      {:ok, attributes, _seen} -> {:ok, Enum.reverse(attributes)}
+      error -> error
+    end
+  end
+
+  defp text(state, event, text, bytes) do
+    kind = if(event == :cdata, do: :cdata, else: :text)
+
+    case state.stack do
+      [frame | rest] ->
+        {:ok, %{state | stack: [append(frame, {kind, text}) | rest], text_bytes: bytes}}
+
+      [] ->
+        if String.trim(text) == "" do
+          {:ok, %{state | text_bytes: bytes}}
+        else
+          stop(state, :invalid_xml, "XML text is outside the root element")
+        end
+    end
+  end
+
+  defp append(frame, {_kind, ""}), do: frame
+
+  defp append(%{content: [{kind, previous} | rest]} = frame, {kind, text})
+       when kind in [:text, :cdata],
+       do: %{frame | content: [{kind, previous <> text} | rest]}
+
+  defp append(frame, item), do: %{frame | content: [item | frame.content]}
+
+  defp normalize_text(content), do: content
+
+  defp next_path(%{stack: []}, raw_name), do: [path_segment(raw_name), 0]
+
+  defp next_path(%{stack: [parent | _]}, raw_name) do
+    name = path_segment(raw_name)
+    parent.path ++ [name, Map.get(parent.child_counts, name, 0)]
+  end
+
+  defp bump_parent([], path), do: {[], path}
+
+  defp bump_parent([parent | ancestors], path) do
+    name = Enum.at(path, -2)
+    parent = %{parent | child_counts: Map.update(parent.child_counts, name, 1, &(&1 + 1))}
+    {[parent | ancestors], path}
+  end
+
+  defp local(raw_name), do: raw_name |> String.split(":") |> List.last()
+
+  defp path_segment(raw_name) do
+    name = local(raw_name)
+
+    cond do
+      name in @safe_path_segments -> name
+      String.valid?(name) -> "$unrecognized"
+      true -> "$invalid"
+    end
+  end
+
+  defp source(state, path) do
+    %{
+      uri: state.source_uri,
+      path: path,
+      line: nil,
+      column: nil,
+      byte_offset: nil
+    }
+  end
+
+  defp limit(state, code, message, path, maximum) do
+    stop(state, code, message,
+      path: path,
+      profile_feature: "restricted_xml",
+      correction: %{"maximum" => maximum}
+    )
+  end
+
+  defp stop(state, code, message, opts \\ []) do
+    opts = Keyword.put_new(opts, :profile_feature, "restricted_xml")
+
+    diagnostic =
+      code |> Diagnostic.new(message, opts) |> locate(state, Keyword.get(opts, :path, []))
+
+    {:stop, %{state | error: diagnostic}}
+  end
+
+  defp locate(%Diagnostic{} = diagnostic, state, path) do
+    %{
+      diagnostic
+      | path: if(diagnostic.path == [], do: path, else: diagnostic.path),
+        location: %{"uri" => state.source_uri},
+        profile_feature: diagnostic.profile_feature || "restricted_xml"
+    }
   end
 end

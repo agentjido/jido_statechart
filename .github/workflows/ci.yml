@@ -1,20 +1,21 @@
 name: V3 integration
 
 on:
+  push:
+  pull_request:
   workflow_dispatch:
     inputs:
-      jido_ref:
-        description: Published Jido commit with the current V3 Turn contract
-        required: true
-      action_ref:
-        description: Published Jido Action commit with the current V3 executable contract
-        required: true
+      run_hex_gate:
+        description: Run the separate published dependency and Hex package gate
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
 
 jobs:
-  verify:
+  local-source-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -23,17 +24,17 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: agentjido/jido
-          ref: ${{ inputs.jido_ref }}
+          ref: 8322de574c53d5c2096243d230c9de4f14803bda
           path: jido
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: agentjido/jido_action
-          ref: ${{ inputs.action_ref }}
+          ref: 65330e3dfcaae570bc87f570a9c815f52ec2d872
           path: jido_action
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           repository: agentjido/jido_signal
-          ref: afc4c5c58e10db1be611c2a846c1d43b5a9ec1dc
+          ref: fd8d00555d6a64b4109619f4c26f1b75e8a91d41
           path: jido_signal
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -42,15 +43,65 @@ jobs:
           path: zoi
       - uses: erlef/setup-beam@0f75c29430f34bb5af4cce5e3b7f6a8860fca236
         with:
-          otp-version: '29'
-          elixir-version: '1.20.4'
-      - name: Check package and integration
+          otp-version: "29"
+          elixir-version: "1.20.4"
+      - name: Verify exact local source matrix
+        run: |
+          test "$(git -C jido rev-parse HEAD)" = "8322de574c53d5c2096243d230c9de4f14803bda"
+          test "$(git -C jido_action rev-parse HEAD)" = "65330e3dfcaae570bc87f570a9c815f52ec2d872"
+          test "$(git -C jido_signal rev-parse HEAD)" = "fd8d00555d6a64b4109619f4c26f1b75e8a91d41"
+          test "$(git -C zoi rev-parse HEAD)" = "2fff2a23e23e7ac0b26f62f49bbc1b12f7818ac9"
+      - name: Resolve local dependencies
+        working-directory: jido_statechart
+        run: mix deps.get
+      - name: Check format and compile
         working-directory: jido_statechart
         run: |
-          mix deps.get
+          mix format --check-formatted
+          mix compile --warnings-as-errors
+      - name: Run full and system tests
+        working-directory: jido_statechart
+        run: |
+          mix test --warnings-as-errors
+          mix test test/system --warnings-as-errors
+          mix test --cover --warnings-as-errors
+      - name: Build docs and examples
+        working-directory: jido_statechart
+        run: |
+          mix docs --warnings-as-errors
+          mix run examples/door.exs
+          mix run examples/parallel_approval.exs
+      - name: Check graph, quality, and diff
+        working-directory: jido_statechart
+        run: |
+          mix xref graph --format cycles --label compile-connected
           mix quality
+          git diff --check
+
+  published-hex-contract:
+    if: github.event_name == 'workflow_dispatch' && inputs.run_hex_gate
+    runs-on: ubuntu-latest
+    env:
+      JIDO_STATECHART_HEX_GATE: "1"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: erlef/setup-beam@0f75c29430f34bb5af4cce5e3b7f6a8860fca236
+        with:
+          otp-version: "29"
+          elixir-version: "1.20.4"
+      - name: Resolve published dependencies
+        run: mix deps.get
+      - name: Run publishable dependency gate
+        run: |
+          mix format --check-formatted
+          mix compile --warnings-as-errors
+          mix test --warnings-as-errors
+          mix test test/system --warnings-as-errors
           mix test --cover --warnings-as-errors
           mix docs --warnings-as-errors
           mix run examples/door.exs
-          mix run examples/approval.exs
-          mix run examples/scxml.exs
+          mix run examples/parallel_approval.exs
+          mix xref graph --format cycles --label compile-connected
+          mix quality
+          mix hex.build
+          git diff --check

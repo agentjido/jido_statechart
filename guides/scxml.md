@@ -1,193 +1,184 @@
-# SCXML Input
+# Jido SCXML 1.0 Profile
 
-`Jido.Statechart.SCXML` compiles a restricted SCXML 1.0 document into the same
-`Definition` used by the data API and Agent DSL. It parses XML once. The core
-interpreter does not read XML or use a second execution engine.
+This package implements the Jido SCXML 1.0 Profile. It follows the
+[W3C SCXML 1.0 Recommendation](https://www.w3.org/TR/scxml/) for the supported
+semantic rules. It has listed restrictions and deviations. It does not claim
+full W3C SCXML processor conformance.
 
-This adapter is a Jido profile. It does not claim full W3C SCXML conformance.
-The format follows the [W3C SCXML specification](https://www.w3.org/TR/scxml/).
-The supported subset and differences are listed below.
+`Jido.Statechart.Profile.features/0` is the authority for feature status.
+`Jido.Statechart.capabilities/0` returns the portable capability manifest and
+its digest.
 
-## Installation and use
+## Compile XML
 
-Saxy is optional for consumers. To use XML, add this dependency:
-
-```elixir
-{:saxy, "~> 1.6"}
-```
-
-The adapter accepts UTF-8 XML bytes. The application owns file access:
+The caller must read the XML bytes. The compiler does no I/O.
 
 ```elixir
 alias Jido.Statechart.SCXML
 
-{:ok, chart} = SCXML.compile(File.read!("charts/door.scxml"))
-# Pass chart to Jido.Statechart.init/3 and step/4.
+{:ok, chart} =
+  "charts/order.scxml"
+  |> File.read!()
+  |> SCXML.compile(id: "order", source_uri: "charts/order.scxml")
 ```
 
-Use `compile!/2` to raise a typed error. Options are `id:`, `version:`,
-`limits:`, and `xml_limits:`. Unknown or duplicate options fail. The chart ID
-comes from `id:`, then the root `name`, then `"scxml"`. The behavior version
-comes from `version:` and defaults to `"1"`. It is separate from the required
-SCXML format version `"1.0"`.
+`compile_stream/2` accepts an enumerable of binary chunks. `compile!/2` raises
+`ArgumentError` for a diagnostic. The accepted options are `:id`, `:limits`,
+and `:source_uri`. Unknown or duplicate options fail.
 
-An application module can compile a file into an ordinary Jido Agent:
+The root must use the SCXML namespace
+`http://www.w3.org/2005/07/scxml` and version `1.0`. The compiler accepts the
+`null` and `jido` data models and early or late data binding.
 
-```elixir
-defmodule MyApp.Door do
-  use Jido.Statechart.Agent, name: "door"
+## Supported model
 
-  @external_resource Path.join(__DIR__, "door.scxml")
-  statechart_xml File.read!(@external_resource), version: "1"
-end
-```
+The profile supports these state and transition features:
 
-Use one `statechart_xml` declaration or one `statechart` block per module.
-`registry/0`, `effects/0`, Signals, Turns, and checkpoints use the normal Agent
-contracts. The XML cannot supply callback code. See the complete
-[XML example](../examples/scxml.exs) and [chart file](../examples/door.scxml).
+- atomic, compound, parallel, final, shallow-history, and deep-history states;
+- explicit and default initial states;
+- external, internal descendant, targetless, eventless, and legal multi-target
+  transitions;
+- SCXML event descriptors and the optimal enabled transition set;
+- entry, exit, transition, initial, history, and finalize content;
+- compound and parallel completion and `donedata`;
+- the internal FIFO event queue and run-to-completion processing.
 
-## Supported elements and attributes
+The profile supports these standard executable elements: `raise`, `if`,
+`elseif`, `else`, `foreach`, `assign`, `log`, `send`, and `cancel`. It supports
+`datamodel`, `data`, `content`, `param`, `donedata`, `invoke`, and `finalize`.
+Executable-content blocks run in document order. An execution error stops the
+remaining elements in that block and adds `error.execution` when the error is
+recoverable.
 
-The SCXML namespace is `http://www.w3.org/2005/07/scxml`. A default namespace or
-a declared prefix is required. Namespace prefixes do not affect the definition.
-All listed standard attributes are unqualified.
+The profile uses the default SCXML Event I/O Processor contract for `<send>`.
+Each send needs `event` or `eventexpr`. A `<content>` child is message data and
+does not replace the event. External targets must be static local Registry
+capabilities. An invalid target, unsupported type, or denied target permission
+adds `error.execution` during the same macrostep. The runtime checks the target
+capability again before it dispatches committed work.
 
-| Element | Attributes | Rules |
-| --- | --- | --- |
-| `scxml` | `version`, `name`, `initial`, `datamodel` | Root only; version must be `1.0`; child states required |
-| `state` | `id`, `initial` | ID required; child states make it compound |
-| `final` | `id` | ID required; entry and exit handlers permitted; transitions forbidden |
-| `transition` | `event`, `target`, `cond`, `type` | At least one event, target, or condition required |
-| `initial` | None | Compound state only; one target-only transition |
-| `onentry`, `onexit` | None | Ordered executable content; multiple handlers preserve document order |
-| `raise` | `event`, optional Jido `data` | One internal event name; no expressions |
+Values such as `cond`, `expr`, `location`, and `array` are restricted Jido data
+model inputs. They are identifiers or bounded expression values. They are not
+Elixir or JavaScript source.
 
-Root children must be `state` or `final`. The initial target defaults to the
-first child in document order. A state can use an `initial` attribute or an
-`initial` element, but cannot combine them. Each initial target must name one
-immediate child. Initial transitions cannot have actions, events, conditions,
-or a `type` attribute. Final states cannot have child states or `donedata`.
-
-A transition can have one target or no target. Multiple targets are not
-supported. Targetless transitions run their actions without exit or entry.
-The default type is `external`. An `internal` transition from a compound
-state to its strict descendant retains the source. Other `internal` transitions
-use external semantics, as specified by SCXML.
-
-State IDs, target IDs, condition IDs, reducer IDs, and effect IDs use this
-ASCII syntax: `[A-Za-z_][A-Za-z0-9_.:-]*`. Names in XML tags and attributes use
-ASCII XML names with an optional namespace prefix. ID values and targets
-cannot contain whitespace.
-
-## Conditions, actions, and data
-
-The adapter uses the Jido registry data model. `datamodel="jido"` is permitted;
-omission selects the same profile. Other data models are rejected.
-`cond="allowed"` selects the trusted guard with ID `"allowed"`. It is an ID,
-not an expression. Domain data is supplied by the application through the
-normal instance or Agent state API.
-
-Custom actions use the namespace `urn:jido:statechart:1`:
-
-```xml
-<scxml xmlns="http://www.w3.org/2005/07/scxml"
-       xmlns:j="urn:jido:statechart:1"
-       version="1.0" name="approval" datamodel="jido">
-  <state id="waiting">
-    <transition event="approve" cond="allowed" target="done">
-      <j:action id="record" params='{"approved":true}'/>
-      <raise event="audit" j:data='{"approved":true}'/>
-      <j:effect id="notify" data='{"approved":true}'/>
-    </transition>
-  </state>
-  <final id="done"/>
-</scxml>
-```
-
-`j:action` has unqualified `id` and optional `params` attributes. It selects a
-trusted reducer. `j:effect` has unqualified `id` and optional `data` attributes.
-It produces an effect request. `raise` can have a qualified `j:data` attribute.
-Payload attributes contain JSON objects and default to `{}`. JSON keys remain
-strings. The core data validator checks their size, nesting, and scalar types.
-These action elements must be empty.
-
-No XML value can select a module, function, or entity resolver. The application
-must provide the registry and effect builders. Application callbacks must
-follow the same purity and termination contracts as data-authored charts.
+The Jido namespace is `urn:jido:statechart:1`. Its `action` element selects an
+allowlisted Registry Action. It cannot select an arbitrary module.
 
 ## Event matching
 
-XML transitions use SCXML event descriptors. Space, tab, carriage return, and
-line feed separate alternative descriptors. A descriptor matches its exact
-name and names with a dot-delimited suffix. Matching is case-sensitive:
+An XML transition event is a space-separated list of descriptors. Matching is
+case-sensitive and uses dot-delimited tokens.
 
 | Descriptor | Matches | Does not match |
 | --- | --- | --- |
 | `order` | `order`, `order.created` | `ordering`, `Order` |
-| `order.`, `order.*` | `order`, `order.created` | `ordering` |
-| `order payment` | Either prefix | Other prefixes |
-| `*` | Any named event | Eventless stabilization |
+| `order.*` | `order`, `order.created` | `ordering` |
+| `order payment` | either prefix | another prefix |
+| `*` | any named event | an eventless step |
 
-A missing event attribute means an eventless transition. Empty descriptors,
-empty dot tokens, and wildcard characters outside a trailing `.*` or the
-single `*` descriptor are rejected. A transition can have at most 32
-descriptors. Each descriptor check consumes macrostep work. A matched transition
-calls its guard once, even when several descriptors match. See the
-[W3C event descriptor rules](https://www.w3.org/TR/scxml/#EventDescriptors).
+A missing event attribute makes an eventless transition. An unhandled external
+event is a successful stable no-op.
 
-Data and DSL transitions keep exact matching by default. They can select the
-same descriptor mode with `event_mode: :scxml`. Exact chart fingerprints from
-0.1.0 remain unchanged. Descriptor mode is part of the fingerprint, so a change
-in matching behavior rejects an incompatible checkpoint.
+## Data and capabilities
 
-## Parser security and limits
+The null data model has no application data and no script support. It supports
+the `In(state_id)` predicate.
 
-The parser uses [Saxy](https://saxy.hexdocs.pm/Saxy.html) with a fixed handler
-and a fixed rejection function for unknown entities. DTDs and all entity
-declarations are rejected before parsing. The five predefined XML entities
-and numeric character references with at most seven digits are supported.
-Numeric values must be valid XML 1.0 characters. The adapter does not
-load external files, URLs, schemas, or XInclude resources.
+The Jido data model uses portable values, trusted expression aliases,
+string-keyed locations, and `In(state_id)`. The trusted Registry has four
+capability types: expression, Action, target, and invocation. A session binds
+the Registry version, manifest digest, and limits digest.
 
-Only XML 1.0 and UTF-8 are accepted. An initial UTF-8 byte order mark is permitted. Comments and an optional XML declaration
-are permitted. Other processing instructions, CDATA, and non-whitespace text
-are rejected. Every unsupported element or attribute produces a typed error.
-Duplicate attributes, duplicate expanded attribute names, unbound prefixes,
-and invalid reserved namespace bindings fail.
+SCXML invocation starts an allowlisted local child statechart. The Jido
+invocation extension starts an allowlisted local Jido Agent. The first profile
+does not start a remote processor or an arbitrary module. An invoke `src` or
+`srcexpr` resolves a local Registry capability. Inline invoke content is
+portable child input. It is not an SCXML document to compile and execute.
 
-The XML byte limit applies before parsing or tree allocation. The SAX handler
-checks element counts, attribute values, names, text, and depth before adding
-nodes to its bounded tree. Saxy can allocate tokens within the byte limit
-before the handler receives them. Core limits apply to the resulting chart.
+An invoke without an authored `id` gets a deterministic hashed, session-scoped
+Jido identifier. An `idlocation` receives that identifier, and distinct invoke
+elements get distinct identifiers. The identifier does not use the SCXML
+`stateid.platformid` form.
 
-| `xml_limits` field | Hard maximum |
-| --- | ---: |
-| `bytes` | 1,048,576 |
-| `depth` | 64 XML elements |
-| `elements` | 16,384 |
-| `attributes` | 16 per element, including namespace declarations |
-| `attribute_bytes` | 4,096 per decoded value |
-| `name_bytes` | 256 per qualified XML name |
-| `text_bytes` | 65,536 total emitted whitespace bytes |
+Invoke `param` and `namelist` values stay in authored order as portable child
+input metadata. The profile does not inject these values into a child SCXML
+top-level data model. It also does not filter the values against child `data`
+declarations.
 
-Limit overrides are maps with known atom or string keys. They can only lower
-the hard maxima. For example, `xml_limits: %{bytes: 65_536, depth: 16}`.
-The adapter returns `:parser_unavailable` when Saxy is absent; the core data API
-still loads. Other errors use `Jido.Statechart.Error`, including
-`:unsupported_xml`, `:invalid_xml`, and `:limit_exceeded`.
+The protected `_event` value uses normalized Jido fields. These include
+`name`, `class`, `send_id`, `origin`, `origin_type`, `invoke_id`, and `data`.
+The values keep the SCXML event meaning, but the normalized names are not the
+exact SCXML `type`, `sendid`, `origintype`, and `invokeid` field names.
 
-## Semantic limits
+## Parser safety
 
-Parallel states, history states, data declarations, scripts, expression
-languages, assignments, conditional executable content, sends, timers, invoked
-services, cancellation, root entry and exit handlers, and foreign executable
-content are not supported. They fail at compile time. The adapter does not
-silently ignore these constructs.
+The parser accepts bounded UTF-8 XML 1.0. It accepts an initial UTF-8 byte order
+mark and normal XML comments. It rejects:
 
-The runtime keeps its bounded Jido contract. An unhandled external event fails
-the macrostep; full SCXML would discard that event. Callback failures fail the
-whole candidate; the adapter does not create SCXML `error.execution` events.
-No partial state or effects are returned. Completion, action ordering, and
-post-commit effects follow the core execution guide. The fixed fixture and
-security tests verify this profile; they are not a W3C conformance suite.
+- DTD and entity declarations;
+- external entities, schemas, XInclude, and resource fetches;
+- unsupported processing instructions and encodings;
+- unknown SCXML elements or attributes;
+- `<script>` and script resources;
+- invalid namespace bindings and malformed names;
+- input that exceeds any XML or data limit.
+
+The five predefined XML entities and valid numeric character references are
+allowed. The parser does not convert input text to atoms. An unknown or hostile
+XML element name is redacted in the diagnostic path.
+
+Compiler errors use `Jido.Statechart.Diagnostic`. A diagnostic has a stable
+code, severity, bounded source path or location, profile feature, and redacted
+correction data. It must not contain input secrets or terminal control text.
+
+See [Semantic Rules](semantics.md) for the current limit values.
+
+## Unsupported features
+
+The first profile does not support:
+
+- the ECMAScript or XPath data model;
+- `<script>` or source-code evaluation;
+- external `data`, `content`, or script resources;
+- inline or external SCXML documents as invoke sources;
+- invoke input injection or filtering against child SCXML top-level data;
+- the BasicHTTP or SCXML Event I/O Processors;
+- remote invocation or arbitrary processor-wide session addressing;
+- DOM data model binding.
+
+## Declared deviations
+
+| Deviation | Jido rule |
+| --- | --- |
+| Bounded macrostep | A configured finite limit can stop run-to-completion work. |
+| Restricted XML | Unsafe XML and external resource input fail before lowering. |
+| Jido data model | Trusted bounded expressions replace source evaluation. |
+| Jido Action | An allowlisted effect-free Action can provide executable content. |
+| Jido invocation | An allowlisted local Jido Agent can be a child. |
+| Commit then dispatch | External work starts only after the Jido Agent commit. |
+| Post-commit child lifecycle | Child start and stop use later authenticated control Turns. |
+| Generated invoke ID form | Deterministic hashed Jido IDs replace `stateid.platformid`. |
+| Invoke input metadata | Ordered portable metadata replaces child SCXML data-model injection. |
+| Event system fields | Normalized Jido field names replace some exact SCXML `_event` field names. |
+
+These differences are part of the public profile. They are not hidden
+implementation details.
+
+## W3C evidence boundary
+
+The package vendors unchanged selected inputs from the
+[W3C SCXML Implementation Report](https://www.w3.org/Voice/2013/scxml-irp/),
+version 10 March 2015. The report states that its goals are implementation and
+interoperability evidence and that conformance testing is not a goal.
+
+The selected `.txml` files use abstract `conf` markup. The package keeps their
+bytes unchanged and runs equivalent profile-native cases for assertions 355,
+403, and 436. Each selected case runs through the pure kernel, direct Flow, and
+live Agent paths. The manifest records all 200 official IR assertion rows. Its
+closed profile scope classifies all 200 rows. The C.1 rows and assertion 253
+are explicit unsupported SCXML Event I/O Processor evidence. They are not
+support claims. The snapshot README, license, source URLs, and SHA-256 values
+are in `test/fixtures/w3c`.
+
+The fixture subset uses the W3C 3-clause BSD license. It is evidence for this
+profile only. It is not a certificate and it is not a full W3C test-suite run.

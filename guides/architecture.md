@@ -1,117 +1,108 @@
 # Architecture
 
-## Ownership
+## Package ownership
 
-| Layer | Owns |
+| Package | Ownership |
 | --- | --- |
-| `jido_statechart` | Chart definition, validation, configuration, interpretation, and effect requests |
-| `jido_action` | Executable Action contract and in-memory execution |
-| `jido_signal` | Signal envelope, routing, serialization, and dispatch |
-| `jido` | Agent state validation, Turns, Directives, AgentServer, commits, persistence, and restart |
-| Jidoka | Product authoring, user interfaces, storage policy, and deployment above Jido |
-| DASP | Protocol messages and protocol conformance |
+| `jido_statechart` | SCXML input, normalized charts, semantic execution, session operations, and the Statechart Plugin |
+| `jido_action` | Actions, Flow definitions, `Jido.Exec`, and in-memory execution |
+| `jido_signal` | Signal values, routing, serialization, dispatch, and the local bus |
+| `jido` | Agents, AgentServer, Plugins, Turns, commit, persistence, and supervision |
 
-A statechart is behavior within an Agent. It is not a durable orchestration
-service or a distributed protocol. Jidoka can author charts through the data
-compiler. DASP can deliver events through an application adapter. Neither
-product nor protocol changes are required by this package.
+The package does not replace AgentServer. It does not own a distributed work
+queue. A statechart is one part of an Agent. An application owns product policy,
+storage selection, external adapters, and abandonment policy.
 
-## XML adapter
+## Compile boundary
 
-`Jido.Statechart.SCXML` is an optional input edge. It uses a bounded SAX handler
-with Saxy, validates a restricted SCXML profile, and calls the data compiler.
-It does not load resources or evaluate expressions. XML Agent declarations
-compile at module compile time. The runtime and checkpoint path use only the
-normalized definition. The SCXML guide defines the exact supported subset.
+`Jido.Statechart.SCXML` accepts XML bytes that the caller already owns. It uses
+a bounded SAX handler. It does not read a file, open a URL, load a schema,
+resolve an external entity, or evaluate source text. The compiler validates the
+Jido SCXML 1.0 Profile and returns an immutable `Model.Chart`.
 
-## Core model
+The chart contains document-order indexes, source paths, a profile version, and
+a deterministic fingerprint. XML text cannot create atoms, select a module, or
+install a capability.
 
-The compiler produces a `Definition` with a map of `State` values, ordered
-`Transition` values, fixed limits, and a SHA-256 fingerprint. Compilation runs
-no application callback. The definition has no process or runtime resource.
+A `Registry` is trusted application input. It gives typed aliases for
+expressions, Actions, targets, and invocation types. Its portable manifest does
+not contain handlers. A session binds the Registry version and digest.
 
-An `Instance` holds domain data and a `Configuration`. The active configuration
-is one ordered path. An `Event` supplies an exact string identity and bounded
-data. A `Result` supplies the complete stable candidate, ordered effects, trace,
-and operation counts.
+## Semantic kernel and Flow
 
-The interpreter uses local immutable values. It does not start processes,
-read a clock, generate IDs, or dispatch requests. Guards and reducers come
-from a separate trusted `Registry`. The application owns callback purity and
-the version of those callbacks.
+The semantic kernel uses immutable values. It selects an optimal transition set,
+plans exits and entries, runs executable content, processes the internal FIFO
+queue, and stops at a stable configuration. All ordering is explicit.
 
-The public validator checks normalized structure and fingerprints. It limits
-malformed normalized values before it reconstructs authoring data. Compilation
-rejects unknown fields instead of silently removing them.
+`Jido.Statechart.Flow` is the canonical direct execution path. It has three
+stages:
 
-## Jido integration
+1. Prepare and validate the chart, session, Registry, event, and limits.
+2. Iterate through bounded semantic microsteps.
+3. Return one stable `Result`.
 
-The Agent DSL generates a neutral `Jido.Agent` definition and the ordinary
-module configuration convention used by Jido. `Jido.Statechart.Agent.build/5` provides the same
-integration for data authoring. The static metadata holds the compiled chart,
-trusted Registry, and trusted effect builders. Mutable state has `:chart` and
-`:data` fields.
+Registered Jido Actions run through `Jido.Exec` with a package-owned minimal
+context. A Statechart Action cannot return effects, a stream, an opaque value, or
+a continuation during a microstep.
 
-`handle_signal/2` creates one bound Turn for `Jido.Statechart.Step`. It builds
-the Step input from trusted metadata and the validated Signal. Signal data is
-never merged into the trusted input. The Step reads current `agent_state` from
-Jido's reserved execution context. It returns the complete next state and one
-ordered Directive batch. Existing combined state fields remain in the result.
+The direct path produces intent records. It does not dispatch them. The caller
+owns any later use of those records.
 
-The Agent schema checks the active path, state status, fingerprint, bounded
-domain data, and application domain schema. Jido also applies its standard
-candidate and Directive validation. Failed work returns no candidate batch.
+## Live Agent path
 
-Jido owns the live commit boundary. A direct `Jido.Agent.cmd/3` returns a candidate
-and Directives. AgentServer validates, persists, commits, and dispatches through
-its normal pipeline. There is no replacement Server, alternate executor, or
-package-owned supervision tree.
+`Jido.Statechart.Chart` binds one normalized chart and one Registry to a module.
+`Jido.Statechart.Agent.Extension` binds one such chart module to an ordinary
+Jido Agent route. It also installs one `Jido.Statechart.Plugin` instance.
 
-## Initialization and recovery
+The Plugin owns one portable session in Agent state. It is the only live write
+path for that session. The route runs the same Statechart Flow as the direct
+API. The Plugin then reduces one package commit directive. Jido validates and
+commits the whole Agent candidate before the Plugin runtime starts external
+work.
 
-An Agent starts with status `"new"`. On its first Signal, the Step runs initial
-entry and stabilization, then the external event. Both phases share the same
-limits. This avoids running callbacks during definition construction and keeps
-initialization effects inside the first state commit.
+The supervised Plugin runtime owns process IDs, task references, timer
+references, child handles, runtime proof secrets, and the current proof epoch.
+These values never enter committed Agent state.
 
-Core and Agent checkpoints store mutable state and fingerprints. They exclude
-callbacks and compiled executable behavior. A DSL Agent restores from its
-current module definition. A generic data-built Agent must receive a trusted
-Agent definition through restore context. Automatic runtime persistence should
-use an application module with a stable definition and restore callback.
+## State and inspection
 
-Restore validates compatibility and state. It does not replay entry actions or
-effects. Jido local abnormal restart keeps the committed Agent and revision.
-This package adds no effect journal, deduplication service, or delivery guarantee.
+`Jido.Statechart.inspect_chart/1` returns safe chart identity and size data.
+`Jido.Statechart.inspect_session/1` returns stable session identity,
+configuration, history, status, counters, trace size, and pending operation IDs.
+It does not return operation payloads or runtime proof material.
 
-Use Jido persistence and recoverable effect facilities when a request must
-survive a process or node failure. The application must supply idempotency keys
-and reconcile uncertain external results. A Directive failure after commit
-cannot undo the committed state.
+Session traces contain identifiers and execution order. They do not contain
+Signal data, Action context, result payloads, or proof values. Diagnostics use
+stable codes, bounded paths, profile features, and redacted correction data.
 
-A fingerprint includes chart structure, ordered behavior IDs, static action
-parameters, limits, and the chart version. It excludes callback implementation
-code. Update the chart version when callbacks change. Jido Agent `vsn` also
-protects the application schema and checkpoint format.
+## Recovery model
 
-## Tested source versions
+The committed session operation ledger is the source of truth for sends, timers,
+cancellation, invocation, and child control. The runtime reconciles this ledger
+after commit, after startup, and at a bounded interval.
 
-These checkouts were used on 2026-10-06. All use V3 package versions. They are
-separate repositories.
+A dispatch attempt is committed before external dispatch. The result is stored
+by a later authenticated Turn. A process crash or lost wake-up cannot delete the
+committed intent. An uncertain result keeps the same immutable operation ID for
+later reconciliation.
 
-| Source | Commit | Package version |
-| --- | --- | --- |
-| `jido` | `8322de574c53d5c2096243d230c9de4f14803bda` | `3.0.0-beta.1` |
-| `jido_action` | `44893a606d276968c50924ee9ef60fc6a4e0c411` | `3.0.0-beta.1` |
-| `jido_signal` | `afc4c5c58e10db1be611c2a846c1d43b5a9ec1dc` | `3.0.0-beta.4` |
-| `zoi` | `2fff2a23e23e7ac0b26f62f49bbc1b12f7818ac9` | `0.18.11` |
+See [Runtime](runtime.md) for persistence, delivery, cleanup, and child rules.
 
-The local Jido and Action commits are not yet in their public upstream
-repositories. Signal and the Zoi fork commits are public. No sibling source
-was copied into this package. The local path dependencies intentionally retain
-the tested contracts. Replace them with published compatible sources before
-release to Hex.
+## Tested V3 source matrix
 
-The host used Elixir 1.20.4 and OTP 29. The minimum supported Elixir requirement
-is 1.18, which matches the current Jido V3 packages. This work did not test the
-minimum-version environment.
+These separate repositories were tested together on 2026-10-07.
+
+| Source | Branch | Commit | Package version |
+| --- | --- | --- | --- |
+| `jido` | `release/v3` | `8322de574c53d5c2096243d230c9de4f14803bda` | `3.0.0-beta.1` |
+| `jido_action` | `release/v3` | `65330e3dfcaae570bc87f570a9c815f52ec2d872` | `3.0.0-beta.12` |
+| `jido_signal` | `release/v3` | `fd8d00555d6a64b4109619f4c26f1b75e8a91d41` | `3.0.0-beta.4` |
+| `zoi` | `jido/v3-minimal` | `2fff2a23e23e7ac0b26f62f49bbc1b12f7818ac9` | `0.18.11` |
+
+The default `mix.exs` dependencies remain local sibling paths during V3
+integration. The local CI job checks these exact commits. The separate Hex gate
+uses published version requirements and builds the package. Both modes must pass
+before release.
+
+The verification host uses Elixir 1.20.4 and OTP 29. The package requirement is
+Elixir 1.18 or later. The minimum version still needs its own CI run.

@@ -1,113 +1,161 @@
 defmodule Jido.Statechart.SCXML do
   @moduledoc """
-  Compiles a restricted SCXML 1.0 document into the core Definition.
+  Compiles bounded XML into the normalized Jido SCXML Profile model.
 
-  XML is parsed once. The interpreter does not read XML. Guards and actions
-  refer to trusted registry IDs; the adapter does not evaluate expressions.
-  See the SCXML guide for the supported elements and semantic restrictions.
-
-  Saxy is an optional dependency. Add `{:saxy, "~> 1.6"}` to the consumer.
-  This API accepts UTF-8 XML bytes. The caller owns file and resource access.
-
-  Options: `:id` and `:version` set the chart identity and behavior version;
-  `:limits` lowers core limits; `:xml_limits` lowers parser limits. XML limits
-  are `:bytes`, `:depth`, `:elements`, `:attributes`, `:attribute_bytes`,
-  `:name_bytes`, and `:text_bytes`. Unknown or duplicate options are errors.
+  This API accepts bytes that the caller already owns. It does not read files,
+  open URLs, resolve entities, select modules, or create atoms from XML text.
+  `compile_stream/2` accepts any enumerable of binary chunks. Chunk boundaries
+  do not change the chart or diagnostic.
   """
-  import Jido.Statechart.SCXML.Validation, only: [ensure!: 3]
-  alias Jido.Statechart.{Compiler, Definition, Error}
-  alias Jido.Statechart.SCXML.{Handler, Lowering, Security}
 
-  @limits %{
-    bytes: 1_048_576,
-    depth: 64,
-    elements: 16_384,
-    attributes: 16,
-    attribute_bytes: 4096,
-    name_bytes: 256,
-    text_bytes: 65_536
-  }
+  alias Jido.Statechart.{Diagnostic, Limits}
+  alias Jido.Statechart.Model.Chart
+  alias Jido.Statechart.SCXML.{Handler, LexicalGuard, Lowering, Validation}
 
-  @doc "Compiles XML bytes. Returns a typed error for unsupported or invalid input."
-  @spec compile(term(), keyword()) :: {:ok, Definition.t()} | {:error, Error.t()}
-  def compile(xml, opts \\ []) do
-    ensure!(Keyword.keyword?(opts), :invalid_xml, "SCXML options must be a keyword list")
-    keys = Keyword.keys(opts)
+  @option_keys [:id, :limits, :source_uri]
+  @parser_chunk_bytes 4096
 
-    ensure!(
-      keys -- [:id, :version, :limits, :xml_limits] == [] and keys == Enum.uniq(keys),
-      :invalid_xml,
-      "Unknown or duplicate SCXML option"
-    )
+  @doc "Compiles one UTF-8 SCXML binary."
+  @spec compile(binary(), keyword()) :: {:ok, Chart.t()} | {:error, Diagnostic.t()}
+  def compile(xml, opts \\ [])
+  def compile(xml, opts) when is_binary(xml), do: compile_stream([xml], opts)
 
-    limits = xml_limits!(Keyword.get(opts, :xml_limits, %{}))
-    xml = Security.validate!(xml, limits)
+  def compile(_xml, _opts),
+    do:
+      {:error,
+       Diagnostic.new(:invalid_xml_input, "SCXML input must be a binary",
+         profile_feature: "restricted_xml"
+       )}
 
-    ensure!(
-      Code.ensure_loaded?(Saxy),
-      :parser_unavailable,
-      "SCXML requires the optional Saxy dependency"
-    )
+  @doc "Compiles an enumerable of UTF-8 SCXML binary chunks."
+  @spec compile_stream(Enumerable.t(), keyword()) ::
+          {:ok, Chart.t()} | {:error, Diagnostic.t()}
+  def compile_stream(chunks, opts \\ []) do
+    result =
+      with :ok <- options(opts),
+           {:ok, limits} <- Limits.new(Keyword.get(opts, :limits, %{})),
+           :ok <- source_uri(Keyword.get(opts, :source_uri)),
+           :ok <- chart_id(Keyword.get(opts, :id)),
+           {:ok, xml} <- LexicalGuard.collect(chunks, limits),
+           {:ok, root} <- parse(xml, limits, Keyword.get(opts, :source_uri)),
+           :ok <- Validation.validate(root),
+           {:ok, chart} <- Lowering.lower(root, opts) do
+        {:ok, chart}
+      end
 
-    state = %{limits: limits, stack: [], root: nil, elements: 0, text_bytes: 0}
-
-    case apply(Saxy, :parse_string, [
-           xml,
-           Handler,
-           state,
-           [expand_entity: {Security, :reject_entity!, []}, cdata_as_characters: false]
-         ]) do
-      {:ok, %{root: root, stack: []}} when root != nil ->
-        root |> Lowering.to_data!(opts) |> Compiler.compile()
-
-      _ ->
-        Error.result(:invalid_xml, "Malformed XML document")
-    end
-  rescue
-    _ -> Error.result(:invalid_xml, "Malformed XML document")
-  catch
-    {:statechart_error, error} -> {:error, error}
+    normalize_result(result, opts)
   end
 
-  @doc "Compiles XML or raises its typed error."
-  @spec compile!(term(), keyword()) :: Definition.t() | no_return()
+  @doc "Compiles one SCXML binary or raises `ArgumentError`."
+  @spec compile!(binary(), keyword()) :: Chart.t() | no_return()
   def compile!(xml, opts \\ []) do
     case compile(xml, opts) do
-      {:ok, definition} -> definition
-      {:error, error} -> raise error
+      {:ok, chart} -> chart
+      {:error, diagnostic} -> raise ArgumentError, "#{diagnostic.code}: #{diagnostic.message}"
     end
   end
 
-  @doc "Returns the hard XML limits. A caller can only lower them."
-  @spec limits() :: map()
-  def limits, do: @limits
+  defp parse(xml, limits, source_uri) do
+    state = Handler.initial(limits, source_uri)
 
-  defp xml_limits!(overrides) do
-    ensure!(
-      is_map(overrides) and not is_struct(overrides),
-      :invalid_limit,
-      "XML limits must be a map"
-    )
+    case Saxy.parse_stream(xml_chunks(xml), Handler, state,
+           expand_entity: :keep,
+           cdata_as_characters: false,
+           character_data_max_length: @parser_chunk_bytes
+         ) do
+      {:ok, %{error: nil, root: root, stack: []}} when not is_nil(root) ->
+        {:ok, root}
 
-    ensure!(map_size(overrides) <= map_size(@limits), :invalid_limit, "Too many XML limits")
+      {:ok, %{error: %Diagnostic{} = diagnostic}} ->
+        {:error, diagnostic}
 
-    {limits, _seen} =
-      Enum.reduce(overrides, {@limits, []}, fn {key, value}, {limits, seen} ->
-        field =
-          Enum.find(Map.keys(@limits), fn field ->
-            key == field or key == Atom.to_string(field)
-          end)
+      {:halt, %{error: %Diagnostic{} = diagnostic}, _rest} ->
+        {:error, diagnostic}
 
-        ensure!(
-          field != nil and field not in seen and is_integer(value) and value > 0 and
-            value <= @limits[field],
-          :invalid_limit,
-          "Invalid, duplicate, or raised XML limit"
-        )
+      {:error, %Saxy.ParseError{}} ->
+        {:error,
+         Diagnostic.new(:invalid_xml, "SCXML input is not well-formed XML",
+           path: ["scxml", 0],
+           location: %{"uri" => source_uri},
+           profile_feature: "restricted_xml"
+         )}
 
-        {Map.put(limits, field, value), [field | seen]}
-      end)
-
-    limits
+      _other ->
+        {:error,
+         Diagnostic.new(:invalid_xml, "SCXML parser did not complete the document",
+           path: ["scxml", 0],
+           location: %{"uri" => source_uri},
+           profile_feature: "restricted_xml"
+         )}
+    end
   end
+
+  defp xml_chunks(xml) do
+    Stream.unfold(xml, fn
+      "" ->
+        nil
+
+      remaining ->
+        size = min(byte_size(remaining), @parser_chunk_bytes)
+
+        {binary_part(remaining, 0, size),
+         binary_part(remaining, size, byte_size(remaining) - size)}
+    end)
+  end
+
+  defp options(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      keys = Keyword.keys(opts)
+
+      if keys == Enum.uniq(keys) and Enum.all?(keys, &(&1 in @option_keys)) do
+        :ok
+      else
+        {:error, Diagnostic.new(:invalid_compiler_options, "SCXML compiler options are invalid")}
+      end
+    else
+      {:error,
+       Diagnostic.new(:invalid_compiler_options, "SCXML compiler options must be a keyword list")}
+    end
+  end
+
+  defp options(_opts),
+    do:
+      {:error,
+       Diagnostic.new(:invalid_compiler_options, "SCXML compiler options must be a keyword list")}
+
+  defp source_uri(nil), do: :ok
+
+  defp source_uri(uri) when is_binary(uri) and byte_size(uri) in 1..2048 do
+    if String.valid?(uri),
+      do: :ok,
+      else: {:error, Diagnostic.new(:invalid_source_uri, "Source URI is invalid")}
+  end
+
+  defp source_uri(_uri),
+    do: {:error, Diagnostic.new(:invalid_source_uri, "Source URI is invalid")}
+
+  defp chart_id(nil), do: :ok
+  defp chart_id(id), do: Diagnostic.validate_id(id, [:options, :id])
+
+  defp safe_source_uri(opts) when is_list(opts) do
+    if Keyword.keyword?(opts) do
+      case Keyword.get(opts, :source_uri) do
+        uri when is_binary(uri) and byte_size(uri) in 1..2048 -> if(String.valid?(uri), do: uri)
+        _other -> nil
+      end
+    end
+  end
+
+  defp safe_source_uri(_opts), do: nil
+
+  defp normalize_result({:error, %Diagnostic{} = diagnostic}, opts) do
+    {:error,
+     %{
+       diagnostic
+       | location: diagnostic.location || %{"uri" => safe_source_uri(opts)},
+         profile_feature: diagnostic.profile_feature || "scxml_element"
+     }}
+  end
+
+  defp normalize_result(result, _opts), do: result
 end

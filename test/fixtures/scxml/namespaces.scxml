@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<scxml xmlns="http://www.w3.org/2005/07/scxml"
+       xmlns:sc="http://www.w3.org/2005/07/scxml"
+       version="1.0"
+       name="namespaces"
+       datamodel="null"
+       initial="root">
+  <state id="root" initial="left">
+    <sc:state id="left">
+      <transition event="advance" target="right"/>
+    </sc:state>
+    <state xmlns:x="urn:example:shadow" id="right"/>
+  </state>
+</scxml>
