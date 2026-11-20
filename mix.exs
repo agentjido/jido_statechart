@@ -9,7 +9,6 @@ defmodule Jido.Statechart.MixProject do
       app: :jido_statechart,
       version: @version,
       elixir: "~> 1.18",
-      elixirc_paths: if(Mix.env() == :test, do: ["lib", "test/support"], else: ["lib"]),
       deps: deps(),
       test_ignore_filters: [fn path -> String.starts_with?(path, "test/fixtures/") end],
       name: "Jido Statechart",
@@ -22,8 +21,6 @@ defmodule Jido.Statechart.MixProject do
         links: %{"GitHub" => @source_url, "Website" => "https://jido.run"},
         files: [
           "lib",
-          "guides",
-          "examples",
           "test/fixtures/w3c",
           "mix.exs",
           ".formatter.exs",
@@ -35,13 +32,20 @@ defmodule Jido.Statechart.MixProject do
       ],
       docs: [
         main: "readme",
+        # Jido generates these links to its hidden Extension callbacks.
+        skip_undefined_reference_warnings_on: [
+          "Jido.Statechart.Plugin.decode_authoring_data/2",
+          "Jido.Statechart.Plugin.encode_authoring_data/2",
+          "Jido.Statechart.Plugin.endpoint_kinds/0",
+          "Jido.Statechart.Plugin.endpoints/1",
+          "Jido.Statechart.Plugin.id/0",
+          "Jido.Statechart.Plugin.lower/2",
+          "Jido.Statechart.Plugin.verify/2",
+          "Jido.Statechart.Plugin.verify_connection/2",
+          "Jido.Statechart.Plugin.vsn/0"
+        ],
         extras: [
           "README.md",
-          "guides/architecture.md",
-          "guides/semantics.md",
-          "guides/scxml.md",
-          "guides/verification.md",
-          "guides/runtime.md",
           "CHANGELOG.md",
           "CONTRIBUTING.md",
           {"LICENSE", title: "Apache 2.0 License"}
@@ -58,40 +62,14 @@ defmodule Jido.Statechart.MixProject do
     ]
   end
 
-  def application, do: [extra_applications: [:crypto]]
+  def application, do: [extra_applications: [:crypto, :inets, :xmerl]]
 
   def cli, do: [preferred_envs: [quality: :test]]
 
   defp deps do
-    if System.get_env("JIDO_STATECHART_HEX_GATE") == "1" do
-      published_deps()
-    else
-      local_deps()
-    end
-  end
-
-  defp local_deps do
     [
-      {:jido, path: "../jido", override: true},
-      {:jido_action, path: "../jido_action", override: true},
-      {:jido_signal, path: "../jido_signal", override: true},
-      {:zoi, path: "../zoi", override: true},
-      {:saxy, "~> 1.6"},
-      {:jason, "~> 1.4"},
-      {:stream_data, "~> 1.4", only: :test, runtime: false},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
-    ]
-  end
-
-  defp published_deps do
-    [
-      {:jido, "~> 3.0.0-beta.1"},
-      {:jido_action, "~> 3.0.0-beta.12"},
-      {:jido_signal, "~> 3.0.0-beta.4"},
-      {:zoi, "~> 0.18.11"},
-      {:saxy, "~> 1.6"},
-      {:jason, "~> 1.4"},
-      {:stream_data, "~> 1.4", only: :test, runtime: false},
+      {:jido, github: "agentjido/jido", ref: "aa61e26d50f8035dcffd9149515e60fcda9dcc6a"},
+      {:req, "~> 0.7"},
       {:ex_doc, "~> 0.34", only: :dev, runtime: false}
     ]
   end

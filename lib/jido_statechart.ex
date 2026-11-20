@@ -1,95 +1,53 @@
 defmodule Jido.Statechart do
   @moduledoc """
-  Public contracts for the Jido SCXML 1.0 Profile.
+  Defines an SCXML chart for use with `Jido.Statechart.Plugin`.
 
-  Compiler and execution entry points are added by their owning implementation
-  units. This module currently exposes the stable profile and safe inspection
-  values that those entry points use.
+  The optional registry binds chart names to trusted guards, Actions, and child
+  Agent modules. Chart text always refers to those bindings by string.
   """
 
-  alias Jido.Statechart.{Diagnostic, Flow, Profile, Registry, Session}
-  alias Jido.Statechart.Model.Chart
+  @doc "Defines a chart module from a compiled chart and an optional registry."
+  defmacro __using__(options) do
+    chart = Keyword.fetch!(options, :chart)
+    registry = Keyword.get(options, :registry, {:%{}, [], []})
 
-  @doc "Returns the machine-readable Jido SCXML capability manifest."
-  @spec capabilities() :: map()
-  def capabilities, do: Profile.manifest()
+    quote do
+      import Jido.Statechart, only: [sigil_SCXML: 2]
 
-  @doc "Initializes one new session through the canonical Statechart Flow."
-  @spec initialize(Chart.t(), Session.t(), Registry.t() | keyword()) :: Jido.Exec.exec_result()
-  def initialize(%Chart{} = chart, %Session{} = session, %Registry{} = registry),
-    do: Flow.initialize(chart, session, registry)
-
-  def initialize(%Chart{} = chart, %Session{} = session, options) do
-    with :ok <- validate_root_options(options),
-         %Registry{} = registry <- Keyword.get(options, :registry) do
-      Flow.initialize(chart, session, registry, Keyword.delete(options, :registry))
-    else
-      {:error, _diagnostic} = error -> error
-      _other -> {:error, Diagnostic.new(:invalid_registry, "A trusted Registry is required")}
+      @chart unquote(chart)
+      @registry unquote(registry)
+      def chart, do: @chart
+      def registry, do: @registry
     end
   end
 
-  @doc "Runs one external event through the canonical Statechart Flow."
-  @spec step(Chart.t(), Session.t(), map(), Registry.t() | keyword()) :: Jido.Exec.exec_result()
-  def step(%Chart{} = chart, %Session{} = session, event, %Registry{} = registry),
-    do: Flow.step(chart, session, event, registry)
+  @doc "Compiles literal SCXML at compile time."
+  defmacro sigil_SCXML({:<<>>, _, [xml]}, []) when is_binary(xml) do
+    xml |> compile!() |> Macro.escape()
+  end
 
-  def step(%Chart{} = chart, %Session{} = session, event, options) do
-    with :ok <- validate_root_options(options),
-         %Registry{} = registry <- Keyword.get(options, :registry) do
-      Flow.step(chart, session, event, registry, Keyword.delete(options, :registry))
-    else
-      {:error, _diagnostic} = error -> error
-      _other -> {:error, Diagnostic.new(:invalid_registry, "A trusted Registry is required")}
+  defmacro sigil_SCXML(_, []), do: raise(ArgumentError, "~SCXML requires literal XML")
+  defmacro sigil_SCXML(_, _), do: raise(ArgumentError, "~SCXML takes no modifiers")
+
+  @doc "Compiles SCXML read at runtime, including SCXML from test templates."
+  defdelegate compile!(xml), to: Jido.Statechart.SCXML
+
+  @doc "Starts a chart session in a running Agent. Pass `:http_location` to enable Basic HTTP."
+  def initialize(server, data \\ %{}, opts \\ []) when is_map(data) do
+    with :ok <- Jido.AgentServer.await_ready(server) do
+      Jido.AgentServer.call(server, initialization_signal(data, nil, opts[:http_location]))
     end
   end
 
-  @doc "Alias for `step/4`."
-  @spec run(Chart.t(), Session.t(), map(), Registry.t() | keyword()) :: Jido.Exec.exec_result()
-  def run(%Chart{} = chart, %Session{} = session, event, registry_or_options),
-    do: step(chart, session, event, registry_or_options)
-
-  defp validate_root_options(options),
-    do: Flow.validate_options(options, [:registry | Flow.runtime_option_keys()])
-
-  @doc "Returns safe identity and size data for a normalized chart."
-  @spec inspect_chart(Chart.t()) :: map()
-  def inspect_chart(%Chart{} = chart) do
-    %{
-      "id" => chart.id,
-      "name" => chart.name,
-      "fingerprint" => chart.fingerprint,
-      "profile_version" => chart.profile_version,
-      "datamodel" => chart.datamodel,
-      "state_count" => length(chart.states),
-      "transition_count" => length(chart.transitions)
-    }
+  @doc false
+  def initialization_signal(data, parent \\ nil, http_location \\ nil) do
+    Jido.Signal.new!(
+      "statechart.initialize",
+      %{data: data, parent: parent, http_location: http_location},
+      source: "/statechart"
+    )
   end
 
-  @doc "Returns safe stable state without operation payloads or trace data."
-  @spec inspect_session(Session.t()) :: map()
-  def inspect_session(%Session{} = session) do
-    pending_ids =
-      session.operations
-      |> Map.values()
-      |> Enum.reject(&Session.Operation.terminal?/1)
-      |> Enum.map(& &1.id)
-      |> Enum.sort()
-
-    %{
-      "id" => session.id,
-      "incarnation" => session.incarnation,
-      "chart_fingerprint" => session.chart_fingerprint,
-      "profile_version" => session.profile_version,
-      "status" => Atom.to_string(session.status),
-      "revision" => session.revision,
-      "generated_id_counter" => session.generated_id_counter,
-      "operation_counter" => session.operation_counter,
-      "configuration" => session.configuration,
-      "history" => session.history,
-      "completed" => session.status in [:completed, :cleaning, :stopped],
-      "trace_entries" => length(session.trace),
-      "pending_intent_ids" => pending_ids
-    }
-  end
+  @doc "Reads the committed chart session from a running Agent."
+  def session(server), do: Jido.AgentServer.snapshot(server).agent.state.statechart.session
 end

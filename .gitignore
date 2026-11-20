@@ -2,5 +2,6 @@
 /deps/
 /doc/
 /cover/
+/tmp/
 /erl_crash.dump
 *.ez
