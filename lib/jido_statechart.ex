@@ -7,7 +7,7 @@ defmodule Jido.Statechart do
   """
 
   alias Jido.AgentServer
-  alias Jido.Statechart.{Error, SCXML}
+  alias Jido.Statechart.{Error, Plugin, SCXML}
 
   @xml_schema Zoi.string()
 
@@ -62,6 +62,51 @@ defmodule Jido.Statechart do
   @doc "Compiles runtime XML. Raises if the XML is invalid or uses unsupported SCXML."
   @spec compile!(String.t()) :: chart()
   defdelegate compile!(xml), to: SCXML
+
+  @doc """
+  Starts an Agent that routes incoming Signals to the chart.
+
+  Pass a chart module or the compiled value from `compile/1`. A chart module
+  supplies its registry. For a compiled value, pass the registry in `:registry`.
+  Use `:data` for initial chart data and `:http_location` for the Basic HTTP
+  access URI. The remaining options go to `Jido.start_agent/3`.
+
+  Returns the Agent PID after initialization commits. If initialization fails,
+  stops the new Agent and returns an error.
+  """
+  @spec spawn(atom(), module() | chart(), keyword()) :: DynamicSupervisor.on_start_child()
+  def spawn(instance, chart, opts) do
+    {chart_opts, agent_opts} = Keyword.split(opts, [:data, :http_location, :registry])
+    data = Keyword.get(chart_opts, :data, %{})
+
+    with true <- is_map(data),
+         {:ok, options} <- Plugin.normalize(%{chart: chart, registry: Keyword.get(chart_opts, :registry, %{})}),
+         agent = Plugin.agent_definition("statechart", options.chart, options.registry),
+         {:ok, server} <- Jido.start_agent(instance, agent, agent_opts) do
+      case initialize_spawn(server, data, chart_opts) do
+        {:ok, %{status: :committed}} ->
+          {:ok, server}
+
+        result ->
+          reason = {:statechart_initialization, result}
+
+          case Jido.stop_agent(instance, server, Keyword.take(agent_opts, [:partition])) do
+            :ok -> {:error, reason}
+            {:error, :not_found} -> {:error, reason}
+            {:error, cleanup} -> {:error, {:statechart_cleanup_failed, server, reason, cleanup}}
+          end
+      end
+    else
+      false -> {:error, :invalid_statechart_initialization}
+      result -> result
+    end
+  end
+
+  defp initialize_spawn(server, data, opts) do
+    initialize(server, data, opts)
+  catch
+    :exit, reason -> {:error, reason}
+  end
 
   @doc """
   Starts a chart session in a running Agent.

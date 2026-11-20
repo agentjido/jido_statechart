@@ -1,7 +1,7 @@
 defmodule Jido.StatechartTest do
   use ExUnit.Case, async: true
 
-  alias Jido.{Agent, Signal}
+  alias Jido.{Agent, AgentServer, Signal}
   alias Jido.Statechart
 
   defmodule Chart do
@@ -25,6 +25,46 @@ defmodule Jido.StatechartTest do
     routes do
       route("**", Jido.Statechart.Plugin.Route)
     end
+  end
+
+  defmodule ApprovalChart do
+    use Jido.Statechart,
+      chart: ~SCXML"""
+      <scxml xmlns="http://www.w3.org/2005/07/scxml" version="1.0" initial="pending">
+        <state id="pending">
+          <transition event="order.approved" target="approved"/>
+        </state>
+        <final id="approved"/>
+      </scxml>
+      """
+  end
+
+  test "spawn starts an initialized order approval Agent" do
+    instance = __MODULE__.ApprovalInstance
+    start_supervised!({Jido, name: instance, namespace: "statechart-approval"})
+
+    assert {:ok, order} = Statechart.spawn(instance, ApprovalChart, id: "order-42")
+    assert is_pid(order)
+    assert %{state: "pending", status: :active} = Statechart.session(order)
+    assert {:error, _reason} = Statechart.spawn(instance, ApprovalChart, id: "order-42")
+    assert Jido.whereis_agent(instance, "order-42") == order
+
+    signal = Signal.new!("order.approved", %{}, source: "/orders")
+    assert {:ok, %{status: :committed}} = AgentServer.call(order, signal)
+    assert %{state: "approved", status: :completed} = Statechart.session(order)
+  end
+
+  test "spawn stops the Agent when a compiled chart fails to initialize" do
+    instance = __MODULE__.FailedSpawnInstance
+    start_supervised!({Jido, name: instance, namespace: "statechart-failed-spawn"})
+
+    assert {:ok, chart} =
+             Statechart.compile(document(~s(<state id="loop"><transition target="loop"/></state>)))
+
+    assert {:error, {:statechart_initialization, {:ok, %{status: :failed}}}} =
+             Statechart.spawn(instance, chart, id: "failed")
+
+    assert Jido.whereis_agent(instance, "failed") == nil
   end
 
   test "a chart must initialize before use and stops processing events when complete" do
