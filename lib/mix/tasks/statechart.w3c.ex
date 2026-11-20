@@ -23,8 +23,8 @@ defmodule Mix.Tasks.Statechart.W3c do
     counts =
       path
       |> manifest_entries()
-      |> Enum.frequencies_by(fn {section, entry} ->
-        {status, detail} = manifest_result(directory, section, entry)
+      |> Enum.frequencies_by(fn {entry, deferral} ->
+        {status, detail} = manifest_result(directory, entry, deferral)
         message = if detail, do: " (#{detail})", else: ""
         Mix.shell().info("#{status} #{entry}#{message}")
         status
@@ -45,7 +45,8 @@ defmodule Mix.Tasks.Statechart.W3c do
         "Usage: mix statechart.w3c FIXTURE_PATH | --manifest PATH.xml | --example PATH.exs"
       )
 
-  defp manifest_entries(path) do
+  @doc false
+  def manifest_entries(path) do
     case path |> File.read!() |> SCXML.read!() do
       {{nil, "assertions"}, _, assertions} ->
         entries =
@@ -54,7 +55,7 @@ defmodule Mix.Tasks.Statechart.W3c do
               {{nil, "start"}, start, _} <- files do
             {{nil, "specnum"}, section} = List.keyfind!(attributes, {nil, "specnum"}, 0)
             {{nil, "uri"}, entry} = List.keyfind!(start, {nil, "uri"}, 0)
-            {section, entry}
+            {entry, deferral_reason(section)}
           end
 
         if entries == [], do: Mix.raise("W3C manifest has no start entries: #{path}")
@@ -68,10 +69,14 @@ defmodule Mix.Tasks.Statechart.W3c do
       Mix.raise("Cannot read W3C manifest #{path} (#{Exception.message(error)})")
   end
 
-  defp manifest_result(_directory, "5.8", _entry), do: {"DEFERRED", "requires scripting"}
-  defp manifest_result(_directory, "B.2", _entry), do: {"DEFERRED", "requires ECMAScript"}
+  defp deferral_reason("5.8"), do: "requires scripting"
+  defp deferral_reason("B.2"), do: "requires ECMAScript"
+  defp deferral_reason(_section), do: nil
 
-  defp manifest_result(directory, _section, entry) do
+  defp manifest_result(_directory, _entry, reason) when is_binary(reason),
+    do: {"DEFERRED", reason}
+
+  defp manifest_result(directory, entry, nil) do
     case {entry, Conformance.w3c(Path.join(directory, entry))} do
       {"198/test198.txml", :ok} ->
         {"ADJUSTED", ~s(origintype URI comparison mapped to "scxml")}

@@ -11,9 +11,10 @@ defmodule Jido.Statechart.ConformanceTest do
 
   @fixture Path.expand("fixtures/w3c/355/test355.txml", __DIR__)
   @origin_type_fixture Path.expand("fixtures/w3c/352/test352.txml", __DIR__)
-  @manual_http Path.expand("fixtures/w3c/513/test513.txt", __DIR__)
-  @templates Path.wildcard(Path.expand("fixtures/w3c/*/*.txml", __DIR__))
-             |> Enum.reject(&Regex.match?(~r/\Atest\d+sub\d+\.txml\z/, Path.basename(&1)))
+  @manifest Path.expand("fixtures/w3c/manifest.xml", __DIR__)
+  @external_resource @manifest
+  @templates for {entry, nil} <- W3c.manifest_entries(@manifest),
+                 do: Path.join(Path.dirname(@manifest), entry)
 
   test "W3C fixture 355 uses the first state in document order" do
     assert capture_io(fn -> W3c.run([@fixture]) end) =~ "PASS #{@fixture}"
@@ -58,7 +59,7 @@ defmodule Jido.Statechart.ConformanceTest do
     assert output =~ "TOTAL 5  PASS 1  ADJUSTED 1  XFAIL 1  DEFERRED 1  FAIL 1"
   end
 
-  for path <- [@manual_http | @templates] -- [@fixture, @origin_type_fixture] do
+  for path <- @templates -- [@fixture, @origin_type_fixture] do
     test "W3C fixture #{Path.basename(path)} passes in a live Agent" do
       path = unquote(path)
 
