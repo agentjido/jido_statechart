@@ -59,6 +59,27 @@ defmodule Jido.Statechart.ConformanceTest do
     assert output =~ "TOTAL 5  PASS 1  ADJUSTED 1  XFAIL 1  DEFERRED 1  FAIL 1"
   end
 
+  @tag :tmp_dir
+  test "the W3C runner rejects missing, unrelated, and empty manifests", %{tmp_dir: tmp} do
+    path = Path.join(tmp, "manifest.xml")
+
+    assert_raise Mix.Error, ~r/Cannot read W3C manifest .*manifest\.xml/, fn ->
+      W3c.run(["--manifest", path])
+    end
+
+    File.write!(path, "<scxml/>")
+
+    assert_raise Mix.Error, "Expected a W3C assertions manifest: #{path}", fn ->
+      W3c.run(["--manifest", path])
+    end
+
+    File.write!(path, "<assertions/>")
+
+    assert_raise Mix.Error, "W3C manifest has no start entries: #{path}", fn ->
+      W3c.run(["--manifest", path])
+    end
+  end
+
   for path <- @templates -- [@fixture, @origin_type_fixture] do
     test "W3C fixture #{Path.basename(path)} passes in a live Agent" do
       path = unquote(path)
@@ -136,8 +157,7 @@ defmodule Jido.Statechart.ConformanceTest do
           {"", ~s(<param name="count" location="count"/>), "<finalize/>", 7},
           {"", ~s(<param name="count" expr="count"/>), "<finalize/>", 1},
           {~s(namelist="count"), "", "", 1},
-          {"", "", ~s(<finalize><assign location="count" expr="_event.data.count"/></finalize>),
-           7}
+          {"", "", ~s(<finalize><assign location="count" expr="_event.data.count"/></finalize>), 7}
         ] do
       chart =
         Statechart.compile!("""
@@ -259,9 +279,7 @@ defmodule Jido.Statechart.ConformanceTest do
         assert_receive {:completion_retry, ^parent, ^child_id, 0}, 1_000
 
         assert {:ok, %{status: :committed}} =
-                 AgentServer.call(child, Signal.new!("probe", %{}, source: "/test"),
-                   timeout: 1_000
-                 )
+                 AgentServer.call(child, Signal.new!("probe", %{}, source: "/test"), timeout: 1_000)
 
         assert %{state: "waiting", data: %{"count" => 0}} = Statechart.session(parent)
       after

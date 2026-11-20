@@ -46,6 +46,21 @@ defmodule Jido.StatechartTest do
     assert {:ok, ^completed, []} = Agent.cmd(completed, finish)
   end
 
+  test "runtime compilation returns a typed error for invalid input and unsupported charts" do
+    xml = document(~s(<state id="ready"/>))
+    assert {:ok, %{initial: ["ready"]}} = Statechart.compile(xml)
+
+    for input <- [:not_xml, "<broken", String.replace(xml, ~s(version="1.0"), ~s(version="2.0"))] do
+      assert {:error, %Statechart.Error.InvalidChart{} = error} = Statechart.compile(input)
+      assert Exception.message(error) =~ "Invalid SCXML chart:"
+    end
+
+    missing_condition = document(~s(<state id="ready"><onentry><if/></onentry></state>))
+
+    assert {:error, %Statechart.Error.InvalidChart{reason: "missing SCXML cond"}} =
+             Statechart.compile(missing_condition)
+  end
+
   test "the compiler rejects unknown transition targets and duplicate IDs" do
     assert_raise ArgumentError, ~r/unknown SCXML transition target/, fn ->
       Statechart.compile!(document(~s(<state id="s"><transition target="missing"/></state>)))
@@ -64,9 +79,7 @@ defmodule Jido.StatechartTest do
     for target <- ["", "parent", "outside"] do
       assert_raise ArgumentError, ~r/invalid SCXML initial target/, fn ->
         Statechart.compile!(
-          document(
-            ~s(<state id="parent" initial="#{target}"><state id="child"/></state><state id="outside"/>)
-          )
+          document(~s(<state id="parent" initial="#{target}"><state id="child"/></state><state id="outside"/>))
         )
       end
     end
@@ -323,9 +336,7 @@ defmodule Jido.StatechartTest do
     unsupported = Jido.Statechart.SCXML.Unsupported
 
     assert_raise unsupported, ~r/invoke type/, fn ->
-      Statechart.compile!(
-        document(~s(<state id="s"><invoke id="one" src="urn:child" type="other"/></state>))
-      )
+      Statechart.compile!(document(~s(<state id="s"><invoke id="one" src="urn:child" type="other"/></state>)))
     end
   end
 

@@ -1,3 +1,4 @@
 [
-  inputs: ["{mix,.formatter}.exs", "{lib,test,examples}/**/*.{ex,exs}"]
+  inputs: ["{mix,.formatter,.credo,.doctor}.exs", "{config,lib,test}/**/*.{ex,exs}"],
+  line_length: 120
 ]

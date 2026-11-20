@@ -66,8 +66,7 @@ defmodule Jido.Statechart.Conformance.Template do
   defp translate_root(_root), do: raise(ArgumentError, "expected an SCXML test template")
 
   defp translate({{@conf, verdict}, [], []}) when verdict in ["pass", "fail"] do
-    {{@scxml, "final"}, [{{nil, "id"}, verdict}],
-     [{{@scxml, "donedata"}, [], [{{@scxml, "content"}, [], [verdict]}]}]}
+    {{@scxml, "final"}, [{{nil, "id"}, verdict}], [{{@scxml, "donedata"}, [], [{{@scxml, "content"}, [], [verdict]}]}]}
   end
 
   defp translate({{@conf, "incrementID"}, [{{nil, "id"}, id}], []}) do
@@ -219,8 +218,7 @@ defmodule Jido.Statechart.Conformance.Template do
     do: {{nil, "targetexpr"}, %Reference{scope: :ioprocessors, key: [@http_type, :location]}}
 
   defp translate_attr("transition", {{@conf, "methodIsPost"}, ""}),
-    do:
-      {{nil, "cond"}, Jido.Expr.new!(:==, [%Reference{scope: :event, key: :http_method}, "POST"])}
+    do: {{nil, "cond"}, Jido.Expr.new!(:==, [%Reference{scope: :event, key: :http_method}, "POST"])}
 
   defp translate_attr(tag, {{@conf, "namelist"}, ids}) when tag in ["send", "invoke"] do
     {{nil, "namelist"}, ids |> String.split() |> Enum.map_join(" ", &("Var" <> &1))}

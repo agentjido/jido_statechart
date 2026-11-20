@@ -124,8 +124,7 @@ defmodule Jido.Statechart.Plugin do
         chart: chart,
         registry: registry,
         session: nil,
-        signal:
-          %Signal{type: "statechart.initialize", data: %{data: data, parent: parent}} = signal,
+        signal: %Signal{type: "statechart.initialize", data: %{data: data, parent: parent}} = signal,
         owner: owner
       })
       when is_map(data) and (is_nil(parent) or is_map(parent)) do

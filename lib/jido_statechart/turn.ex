@@ -390,7 +390,7 @@ defmodule Jido.Statechart.Turn do
       do: execute_action({:if, [{condition, actions}]}, work)
 
     defp execute_action({:foreach, expression, item, index, actions}, work) do
-      with {:ok, array} when is_list(array) and length(array) >= 0 <- evaluate(expression, work),
+      with {:ok, array} when is_list(array) and is_integer(length(array)) <- evaluate(expression, work),
            true <- local_variable?(item) and (is_nil(index) or local_variable?(index)) do
         data = Map.put_new(work.session.data, item, nil)
         data = if index, do: Map.put_new(data, index, nil), else: data
@@ -742,8 +742,7 @@ defmodule Jido.Statechart.Turn do
       pending: true
     }
 
-    with {:ok,
-          %{state: %{pending: false, session: stable, effects: effects, ready_invokes: invokes}}} <-
+    with {:ok, %{state: %{pending: false, session: stable, effects: effects, ready_invokes: invokes}}} <-
            Jido.Exec.run(__MODULE__, input) do
       {:ok, stable, Enum.reverse(effects), invokes}
     else

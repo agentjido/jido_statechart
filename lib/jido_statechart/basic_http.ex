@@ -9,9 +9,11 @@ defmodule Jido.Statechart.BasicHTTP do
   @timeout 1_000
 
   @doc false
+  @spec type() :: String.t()
   def type, do: @type_uri
 
   @doc "Submits an HTTP POST body to a chart's Agent. Form values can contain JSON."
+  @spec receive_post(AgentServer.server(), binary(), String.t()) :: :ok | {:error, term()}
   def receive_post(server, body, content_type \\ @form) when is_binary(body) do
     {event, data} =
       case String.split(String.downcase(content_type), ";", parts: 2) do
@@ -47,6 +49,7 @@ defmodule Jido.Statechart.BasicHTTP do
   end
 
   @doc false
+  @spec post(String.t(), %{name: String.t() | nil, data: map() | binary()}) :: :ok | {:error, term()}
   def post(target, %{name: event, data: data}) do
     {type, body} = request_body(event, data)
 

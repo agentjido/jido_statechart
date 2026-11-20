@@ -6,6 +6,14 @@ defmodule Jido.Statechart do
   Agent modules. Chart text always refers to those bindings by string.
   """
 
+  alias Jido.AgentServer
+  alias Jido.Statechart.{Error, SCXML}
+
+  @xml_schema Zoi.string()
+
+  @typedoc "A compiled chart accepted by the Statechart Plugin."
+  @type chart :: map()
+
   @doc "Defines a chart module from a compiled chart and an optional registry."
   defmacro __using__(options) do
     chart = Keyword.fetch!(options, :chart)
@@ -16,7 +24,13 @@ defmodule Jido.Statechart do
 
       @chart unquote(chart)
       @registry unquote(registry)
+
+      @doc "Returns the compiled chart for the Statechart Plugin."
+      @spec chart() :: Jido.Statechart.chart()
       def chart, do: @chart
+
+      @doc "Returns the chart's named bindings."
+      @spec registry() :: map()
       def registry, do: @registry
     end
   end
@@ -29,17 +43,43 @@ defmodule Jido.Statechart do
   defmacro sigil_SCXML(_, []), do: raise(ArgumentError, "~SCXML requires literal XML")
   defmacro sigil_SCXML(_, _), do: raise(ArgumentError, "~SCXML takes no modifiers")
 
-  @doc "Compiles SCXML read at runtime, including SCXML from test templates."
-  defdelegate compile!(xml), to: Jido.Statechart.SCXML
+  @doc """
+  Compiles runtime XML into a chart.
 
-  @doc "Starts a chart session in a running Agent. Pass `:http_location` to enable Basic HTTP."
+  Returns an invalid-chart error for invalid input or unsupported SCXML.
+  """
+  @spec compile(term()) :: {:ok, chart()} | {:error, Error.InvalidChart.t()}
+  def compile(xml) do
+    case Zoi.parse(@xml_schema, xml) do
+      {:ok, xml} -> {:ok, compile!(xml)}
+      {:error, _issues} -> {:error, Error.InvalidChart.exception(reason: "expected an XML string")}
+    end
+  rescue
+    error in [ArgumentError, SCXML.Unsupported] ->
+      {:error, Error.InvalidChart.exception(reason: Exception.message(error))}
+  end
+
+  @doc "Compiles runtime XML. Raises if the XML is invalid or uses unsupported SCXML."
+  @spec compile!(String.t()) :: chart()
+  defdelegate compile!(xml), to: SCXML
+
+  @doc """
+  Starts a chart session in a running Agent.
+
+  Pass initial values in `data` for root data declarations. Pass
+  `:http_location` in `opts` to give the Basic HTTP processor an access URI.
+  Check the returned turn status before sending chart events.
+  """
+  @spec initialize(AgentServer.server(), map(), keyword()) ::
+          {:ok, AgentServer.TurnResult.t()} | {:error, term()}
   def initialize(server, data \\ %{}, opts \\ []) when is_map(data) do
-    with :ok <- Jido.AgentServer.await_ready(server) do
-      Jido.AgentServer.call(server, initialization_signal(data, nil, opts[:http_location]))
+    with :ok <- AgentServer.await_ready(server) do
+      AgentServer.call(server, initialization_signal(data, nil, opts[:http_location]))
     end
   end
 
   @doc false
+  @spec initialization_signal(map(), map() | nil, String.t() | nil) :: Jido.Signal.t()
   def initialization_signal(data, parent \\ nil, http_location \\ nil) do
     Jido.Signal.new!(
       "statechart.initialize",
@@ -48,6 +88,7 @@ defmodule Jido.Statechart do
     )
   end
 
-  @doc "Reads the committed chart session from a running Agent."
-  def session(server), do: Jido.AgentServer.snapshot(server).agent.state.statechart.session
+  @doc "Reads the committed chart session, or `nil` before initialization, from a running Agent."
+  @spec session(AgentServer.server()) :: map() | nil
+  def session(server), do: AgentServer.snapshot(server).agent.state.statechart.session
 end

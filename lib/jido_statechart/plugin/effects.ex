@@ -119,9 +119,7 @@ defmodule Jido.Statechart.Plugin.Effects do
   end
 
   defp dispatch_committed(effect, runtime, context) do
-    dispatch_committed(effect, runtime, context.jido, context.agent_id,
-      partition: context.partition
-    )
+    dispatch_committed(effect, runtime, context.jido, context.agent_id, partition: context.partition)
   catch
     :exit, reason -> {:error, reason}
   end
@@ -288,6 +286,8 @@ defmodule Jido.Statechart.Plugin.Effects do
   end
 
   defp completion_delivery_failed(parent, signal, reason) do
+    # The host application selects which structured metadata to show.
+    # credo:disable-for-next-line Credo.Check.Warning.MissedMetadataKeyInLoggerConfig
     Logger.warning("Statechart child completion delivery failed",
       parent: parent,
       child: signal.data.child,
@@ -361,16 +361,13 @@ defmodule Jido.Statechart.Plugin.Effects do
   end
 
   defp effect_error(event, fields),
-    do:
-      Signal.new!("statechart.effect_error", Map.put(fields, :event, event),
-        source: "/statechart"
-      )
+    do: Signal.new!("statechart.effect_error", Map.put(fields, :event, event), source: "/statechart")
 
   defp communication_error(message),
     do: effect_error("error.communication", Map.take(message, [:sendid]))
 
   defp active?(sender) do
-    is_pid(sender) and Process.alive?(sender) and
+    Process.alive?(sender) and
       match?(
         %{agent: %{state: %{statechart: %{session: %{status: :active}}}}},
         AgentServer.snapshot(sender)

@@ -1,33 +1,39 @@
-name: V3 integration
+name: CI
 
 on:
-  push:
   pull_request:
+  merge_group:
+  push:
+    branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
+  actions: read
   contents: read
 
 jobs:
-  published-jido:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: erlef/setup-beam@0f75c29430f34bb5af4cce5e3b7f6a8860fca236
-        with:
-          otp-version: "29"
-          elixir-version: "1.20.4"
-      - name: Resolve dependencies
-        run: mix deps.get
-      - name: Check format, compile, and test
-        run: |
-          mix quality
-          mix test --cover --warnings-as-errors
-      - name: Build docs and run chart cases
-        run: |
-          mix docs --warnings-as-errors
-          mix statechart.w3c test/fixtures/w3c/355/test355.txml
-      - name: Check compile dependencies and diff
-        run: |
-          mix xref graph --format cycles --label compile-connected
-          git diff --check
+  ci:
+    name: CI (OTP ${{ matrix.otp }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - otp: "27"
+            elixir_versions: '["1.18", "1.19"]'
+          - otp: "29"
+            elixir_versions: '["1.20"]'
+    uses: agentjido/github-actions/.github/workflows/jido-ci.yml@v4
+    with:
+      quality_otp_version: "29"
+      quality_elixir_version: "1.20"
+      otp_versions: ${{ format('["{0}"]', matrix.otp) }}
+      elixir_versions: ${{ matrix.elixir_versions }}
+      credo_command: mix credo --min-priority high
+      docs_command: mix doctor --raise && mix docs --warnings-as-errors
+      test_command: mix coveralls --warnings-as-errors && mix statechart.w3c --manifest test/fixtures/w3c/manifest.xml
+      # Enable when Hex Jido includes Flow bodies for Iterate.
+      validate_hex_package: false

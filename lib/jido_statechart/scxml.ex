@@ -95,10 +95,11 @@ defmodule Jido.Statechart.SCXML do
 
     data = root_data ++ Enum.flat_map(entries, fn {_id, state} -> Map.get(state, :data, []) end)
 
-    Enum.reduce(data, MapSet.new(), fn {id, _expr}, seen ->
-      if MapSet.member?(seen, id), do: raise(ArgumentError, "duplicate SCXML data id #{id}")
-      MapSet.put(seen, id)
-    end)
+    _data_ids =
+      Enum.reduce(data, MapSet.new(), fn {id, _expr}, seen ->
+        if MapSet.member?(seen, id), do: raise(ArgumentError, "duplicate SCXML data id #{id}")
+        MapSet.put(seen, id)
+      end)
 
     chart = %{
       initial: initial,
@@ -474,13 +475,13 @@ defmodule Jido.Statechart.SCXML do
 
   defp action!({{@scxml, "if"} = name, attributes, content}) do
     attrs = attrs!(name, attributes, ["cond"])
-    first = {condition(Map.fetch!(attrs, "cond")), []}
+    first = {condition(expression_source!(attrs, "cond")), []}
 
     {branches, _else_seen} =
       Enum.reduce(elements!(content), {[first], false}, fn
         {{@scxml, "elseif"} = name, attrs, children}, {branches, false} ->
           empty!(name, children)
-          guard = name |> attrs!(attrs, ["cond"]) |> Map.fetch!("cond") |> condition()
+          guard = name |> attrs!(attrs, ["cond"]) |> expression_source!("cond") |> condition()
           {[{guard, []} | branches], false}
 
         {{@scxml, "else"} = name, [], children}, {branches, false} ->
@@ -505,10 +506,9 @@ defmodule Jido.Statechart.SCXML do
 
   defp action!({{@scxml, "foreach"} = name, attributes, content}) do
     attrs = attrs!(name, attributes, ["array", "item", "index"])
-    array = expression(Map.fetch!(attrs, "array"))
+    array = expression(expression_source!(attrs, "array"))
 
-    {:foreach, array, required!(attrs, "item"), attrs["index"],
-     Enum.map(elements!(content), &action!/1)}
+    {:foreach, array, required!(attrs, "item"), attrs["index"], Enum.map(elements!(content), &action!/1)}
   end
 
   defp action!({{@scxml, "log"} = name, attributes, content}) do
@@ -729,6 +729,14 @@ defmodule Jido.Statechart.SCXML do
     case attrs[key] do
       value when is_binary(value) and value != "" -> value
       _ -> raise ArgumentError, "missing SCXML #{key}"
+    end
+  end
+
+  defp expression_source!(attrs, key) do
+    # Empty expressions reach runtime evaluation so the chart can handle error.execution.
+    case Map.fetch(attrs, key) do
+      {:ok, source} -> source
+      :error -> raise ArgumentError, "missing SCXML #{key}"
     end
   end
 

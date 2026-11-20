@@ -5,3 +5,11 @@
 /tmp/
 /erl_crash.dump
 *.ez
+*.plt
+*.plt.hash
+/.elixir_ls/
+/.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

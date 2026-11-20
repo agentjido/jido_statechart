@@ -1,4 +1,11 @@
 defmodule Mix.Tasks.Statechart.W3c do
+  @moduledoc """
+  Runs W3C SCXML fixtures in live Jido Agents.
+
+  Pass a fixture path, `--manifest PATH.xml` for the complete suite, or
+  `--example PATH.exs` for a trusted local Elixir file that returns cases.
+  The manifest run fails if a fixture has an unexpected result.
+  """
   use Mix.Task
 
   alias Jido.Statechart.Conformance
@@ -40,10 +47,7 @@ defmodule Mix.Tasks.Statechart.W3c do
   def run([path]), do: report(path, Conformance.w3c(path))
 
   def run(_args),
-    do:
-      Mix.raise(
-        "Usage: mix statechart.w3c FIXTURE_PATH | --manifest PATH.xml | --example PATH.exs"
-      )
+    do: Mix.raise("Usage: mix statechart.w3c FIXTURE_PATH | --manifest PATH.xml | --example PATH.exs")
 
   @doc false
   def manifest_entries(path) do

@@ -9,8 +9,8 @@ defmodule Jido.Statechart.MixProject do
       app: :jido_statechart,
       version: @version,
       elixir: "~> 1.18",
+      start_permanent: Mix.env() == :prod,
       deps: deps(),
-      test_ignore_filters: [fn path -> String.starts_with?(path, "test/fixtures/") end],
       name: "Jido Statechart",
       description: "Bounded, deterministic statecharts for Jido V3 Agents",
       source_url: @source_url,
@@ -18,7 +18,12 @@ defmodule Jido.Statechart.MixProject do
       package: [
         licenses: ["Apache-2.0", "BSD-3-Clause"],
         maintainers: ["Mike Hostetler"],
-        links: %{"GitHub" => @source_url, "Website" => "https://jido.run"},
+        links: %{
+          "Changelog" => "https://hexdocs.pm/jido_statechart/changelog.html",
+          "Documentation" => "https://hexdocs.pm/jido_statechart",
+          "GitHub" => @source_url,
+          "Website" => "https://jido.run"
+        },
         files: [
           "lib",
           "test/fixtures/w3c",
@@ -27,11 +32,13 @@ defmodule Jido.Statechart.MixProject do
           "README.md",
           "CHANGELOG.md",
           "CONTRIBUTING.md",
+          "usage-rules.md",
           "LICENSE"
         ]
       ],
       docs: [
         main: "readme",
+        source_ref: "v#{@version}",
         # Jido generates these links to its hidden Extension callbacks.
         skip_undefined_reference_warnings_on: [
           "Jido.Statechart.Plugin.decode_authoring_data/2",
@@ -48,15 +55,22 @@ defmodule Jido.Statechart.MixProject do
           "README.md",
           "CHANGELOG.md",
           "CONTRIBUTING.md",
+          "usage-rules.md",
           {"LICENSE", title: "Apache 2.0 License"}
         ]
       ],
-      test_coverage: [summary: [threshold: 90], ignore_modules: [~r/^JidoStatechartTest/]],
+      test_coverage: [tool: ExCoveralls, summary: [threshold: 90]],
+      dialyzer: [plt_add_apps: [:mix]],
       aliases: [
+        setup: ["deps.get"],
+        install_hooks: ["git_hooks.install"],
+        q: ["quality"],
         quality: [
           "format --check-formatted",
           "compile --warnings-as-errors",
-          "test --warnings-as-errors"
+          "credo --min-priority high",
+          "dialyzer",
+          "doctor --raise"
         ]
       ]
     ]
@@ -64,13 +78,30 @@ defmodule Jido.Statechart.MixProject do
 
   def application, do: [extra_applications: [:crypto, :inets, :xmerl]]
 
-  def cli, do: [preferred_envs: [quality: :test]]
+  def cli do
+    [
+      preferred_envs: [
+        install_hooks: :dev,
+        coveralls: :test,
+        "coveralls.html": :test
+      ]
+    ]
+  end
 
   defp deps do
     [
-      {:jido, github: "agentjido/jido", ref: "aa61e26d50f8035dcffd9149515e60fcda9dcc6a"},
+      {:jido, github: "agentjido/jido", branch: "release/v3"},
       {:req, "~> 0.7"},
-      {:ex_doc, "~> 0.34", only: :dev, runtime: false}
+      {:splode, "~> 0.3.0"},
+      {:telemetry, "~> 1.3"},
+      {:zoi, "~> 0.19.0"},
+      {:credo, "~> 1.7", only: [:dev, :test], runtime: false},
+      {:dialyxir, "~> 1.4", only: [:dev, :test], runtime: false},
+      {:doctor, "~> 0.21", only: :dev, runtime: false},
+      {:ex_doc, "~> 0.34", only: :dev, runtime: false},
+      {:excoveralls, "~> 0.18", only: :test, runtime: false},
+      {:git_hooks, "~> 0.8", only: [:dev, :test], runtime: false},
+      {:git_ops, "~> 2.12", only: :dev, runtime: false}
     ]
   end
 end

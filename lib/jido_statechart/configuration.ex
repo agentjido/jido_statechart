@@ -135,8 +135,7 @@ defmodule Jido.Statechart.Configuration do
             :error ->
               %{targets: defaults, actions: actions} = state.initial
 
-              {targets ++ defaults,
-               Map.update(blocks, state.parent, [actions], &(&1 ++ [actions]))}
+              {targets ++ defaults, Map.update(blocks, state.parent, [actions], &(&1 ++ [actions]))}
           end
       end
     end)
