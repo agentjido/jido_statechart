@@ -1,5 +1,10 @@
 # Jido Statechart
 
+> [!IMPORTANT]
+> **`jido_statechart` is planned for deprecation.** Jido v3 includes a [Statechart plugin](https://github.com/agentjido/jido/blob/main/guides/built-in-plugins/statecharts.md).
+>
+> Check your chart, Agent setup, and effects against the v3 plugin before changing dependencies.
+
 Use SCXML 1.0 to define how a Jido Agent changes state in response to Signals.
 A chart controls transitions, entry and exit work, and completion. The
 Statechart Plugin stores the session on the Agent.
